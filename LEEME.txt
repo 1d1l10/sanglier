@@ -1,0 +1,10 @@
+Standalone Netlify site for the Eth Sanglier staff app.
+
+1. Drag this whole folder (or the zip) onto the Netlify project's Deploys page.
+2. Project configuration > Environment variables, add:
+   AIRTABLE_TOKEN   (same token the website uses; needs read+write on Reservas, Ocupacion, Profesores, Avisos)
+   AIRTABLE_BASE_ID appCPMJQxYGMUZwOu
+   STAFF_SECRET     any long random text
+   LAIA_WHATSAPP    digits only, e.g. 34600123456
+3. Deploy again after adding the variables (Deploys > Trigger deploy), then open /staff/
+4. Functions list should show: staff, notify.
