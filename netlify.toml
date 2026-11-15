@@ -1,2 +1,19 @@
 [functions]
   directory = "netlify/functions"
+
+# security headers for every page
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "same-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Permissions-Policy = "camera=(), geolocation=(), payment=()"
+
+# the service worker must always be fresh, or phones keep an old copy
+[[headers]]
+  for = "/staff/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/staff/"

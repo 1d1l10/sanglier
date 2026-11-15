@@ -9,7 +9,9 @@ export const config = { path: ["/api/staff", "/api/staff/*"] };
 
 import { T, F, TO_CONFIRM, PAID, LOST, LEVELS, ADMIN, OCC, q, toMin, isHM, isDate, addDays, madridToday, madridHM, monthEnd, sel, firstName,
   env, at, listAll, rowsFor, getRow } from "../lib/staff-core.mjs";
-import { setupState, plan, deliver, recentLog, recipients, logWrite, sendEmail, clientIO } from "../lib/staff-notify.mjs";
+import { setupState, plan, deliver, recentLog, recipients, logWrite, sendEmail, clientIO, alertAdmins } from "../lib/staff-notify.mjs";
+import { hashPin, isHashed, normPin, pinVersion, samePin, loginGate, loginFailed, loginOk } from "../lib/staff-auth.mjs";
+import { pushReady, cleanSubscription, addSub, removeSub, readSubs, pushTo } from "../lib/staff-push.mjs";
 import { upcoming, sampleMessages, confirmAttendance, langOf } from "../lib/staff-remind.mjs";
 import { waNumber, validEmail } from "../lib/staff-digest.mjs";
 import { Refused, createClass, extendClass, addDays_ as addBookingDays, recentChanges } from "../lib/staff-classes.mjs";
@@ -33,17 +35,9 @@ function verify(token) {
   const [body, mac] = token.split(".");
   const good = crypto.createHmac("sha256", env("STAFF_SECRET")).update(body).digest("base64url");
   if (mac.length !== good.length || !crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(good))) return null;
-  const p = JSON.parse(Buffer.from(body, "base64url").toString());
-  return p.exp > Date.now() ? p : null;
+  let p; try { p = JSON.parse(Buffer.from(body, "base64url").toString()); } catch { return null; }
+  return p && p.exp > Date.now() ? p : null;
 }
-const FAILS = new Map(); // best effort, per function instance
-function tooMany(ip) {
-  const f = FAILS.get(ip); if (!f) return false;
-  if (Date.now() - f.t > 5 * 60e3) { FAILS.delete(ip); return false; }
-  return f.n >= 5;
-}
-function fail(ip) { const f = FAILS.get(ip) || { n: 0, t: Date.now() }; f.n++; f.t = Date.now(); FAILS.set(ip, f); }
-
 /* ---------------- handler ---------------- */
 export default async (req, context) => {
   try {
@@ -57,19 +51,31 @@ export default async (req, context) => {
     /* the "I'm coming" button in the client reminders: public, protected by a signed link */
     if (route === "confirm" && req.method === "GET") return confirmAttendance(url.searchParams.get("r"), url.searchParams.get("s"), url.searchParams.get("l"));
 
-    /* login */
+    /* login: 4-digit PIN (gloves), protected by server-side limits, see lib/staff-auth.mjs */
     if (route === "login" && req.method === "POST") {
-      if (tooMany(ip)) return err(429, "Demasiados intentos. Espera 5 minutos.");
+      const gate = await loginGate(ip);
+      if (gate.blocked) return err(429, gate.scope === "global"
+        ? `Acceso bloqueado ${gate.minutes} min por seguridad (demasiados PIN incorrectos). Si no eras tú, avisa a Laia.`
+        : `Demasiados intentos. Espera ${gate.minutes} min.`);
       const { pin } = await req.json().catch(() => ({}));
-      if (!/^\d{4}$/.test(String(pin || ""))) { fail(ip); return err(401, "PIN incorrecto."); }
-      const recs = await listAll(T.prof, { filterByFormula: `AND({PIN}='${pin}', {Activo})`, maxRecords: "2" });
-      if (recs.length !== 1) { fail(ip); return err(401, "PIN incorrecto."); }
-      FAILS.delete(ip);
+      const wrong = async () => {
+        const r = await loginFailed(ip);
+        if (r.globalLocked) await alertAdmins("Alerta de acceso", "Muchos PIN incorrectos en la app del equipo. La entrada queda bloqueada 20 minutos.");
+        return err(401, "PIN incorrecto.");
+      };
+      if (!/^\d{4}$/.test(String(pin || ""))) return wrong();
+      const h = hashPin(pin);
+      const recs = await listAll(T.prof, { filterByFormula: `AND(OR({PIN}='${h}', {PIN}='${pin}'), {Activo})`, maxRecords: "2" });
+      if (recs.length !== 1) return wrong();
+      await loginOk(ip);
       const f = recs[0].fields, role = f[F.pRole]?.name || f[F.pRole] || "Instructor";
+      if (!isHashed(f[F.pPin])) {                 // legacy plain PIN: store it hashed from now on
+        try { await at(T.prof, { method: "PATCH", body: { records: [{ id: recs[0].id, fields: { [F.pPin]: h } }] } }); } catch (e) { console.error("pin-upgrade", e.message); }
+      }
       const days = role === ADMIN ? 1 : 30;    // instructors stay signed in (gloves); office 1 day
       const me = { id: recs[0].id, name: f[F.pName], role };
       return json({
-        token: sign({ ...me, exp: Date.now() + days * 864e5 }),
+        token: sign({ ...me, pv: pinVersion(h), exp: Date.now() + days * 864e5 }),
         me: { ...me, photo: f[F.pPhoto]?.[0]?.thumbnails?.large?.url || "", teaches: (f[F.pDisc] || []).length > 0 || role !== ADMIN },
         laiaWa: (env("LAIA_WHATSAPP") || "").replace(/\D/g, ""),
       });
@@ -81,8 +87,33 @@ export default async (req, context) => {
     let pr; try { pr = await at(`${T.prof}/${tok.id}`, { params: { returnFieldsByFieldId: "true" } }); } catch { pr = null; }
     if (!pr || !pr.fields[F.pActive])
       return err(401, "Tu perfil ya no está activo. Habla con Laia.");
+    if (tok.pv !== pinVersion(pr.fields[F.pPin]))   // PIN changed (or a token from before this check): sign in again
+      return err(401, "Tu PIN ha cambiado. Entra con el PIN nuevo.");
     const me = { id: tok.id, name: pr.fields[F.pName], role: sel(pr.fields[F.pRole]) || "Instructor" };
     const isAdmin = me.role === ADMIN, isShared = me.role === OCC;
+
+    /* ---------- push notifications on this phone ---------- */
+    if (route === "push") {
+      if (req.method === "GET" && id === "key") return json({ key: pushReady() ? env("VAPID_PUBLIC_KEY") : "" });
+      if (isShared) return err(403, "Los perfiles compartidos no reciben notificaciones.");
+      if (!pushReady()) return err(400, "Las notificaciones todavía no están configuradas en Netlify.");
+      const body = await req.json().catch(() => ({}));
+      if (req.method === "POST" && id === "subscribe") {
+        const sub = cleanSubscription(body.subscription);
+        if (!sub) return err(400, "Este navegador no ha dado una suscripción válida.");
+        const n = await addSub(me.id, sub, req.headers.get("user-agent") || "");
+        return json({ ok: true, devices: n });
+      }
+      if (req.method === "POST" && id === "unsubscribe") {
+        return json({ ok: true, devices: await removeSub(me.id, String(body.endpoint || "")) });
+      }
+      if (req.method === "POST" && id === "test") {
+        const n = await pushTo({ id: me.id, name: me.name }, { title: "Eth Sànglier", body: `Hola ${firstName(me.name)}, las notificaciones funcionan en este móvil.`, url: "/staff/", tag: "prueba" });
+        return json({ ok: true, sent: n });
+      }
+      if (req.method === "GET" && id === "status") return json({ devices: (await readSubs(me.id)).subs.length });
+      return err(404, "Ruta no encontrada.");
+    }
 
     /* schedule: own rows; admins may ask for one teacher or the whole team */
     if (route === "schedule" && req.method === "GET") {
@@ -166,30 +197,39 @@ export default async (req, context) => {
     if (route === "profiles") {
       if (!isAdmin) return err(403, "Solo para administración.");
       const all = async () => (await listAll(T.prof, { "sort[0][field]": "Nombre" }, { byName: true })).map(r => ({
-        id: r.id, name: r.fields["Nombre"] || "", pin: r.fields["PIN"] || "", role: sel(r.fields["Rol"]),
+        id: r.id, name: r.fields["Nombre"] || "", pinStored: r.fields["PIN"] || "", role: sel(r.fields["Rol"]),
         active: !!r.fields["Activo"], disciplines: r.fields["Disciplinas"] || [], phone: r.fields["Teléfono"] || "",
         email: r.fields["Email"] || "", notify: r.fields["Avisos"] || [],
         photo: r.fields["Foto"]?.[0]?.thumbnails?.large?.url || "" }));
-      if (req.method === "GET") return json({ profiles: await all() });
+      const pub = ({ pinStored, ...x }) => ({ ...x, pin: "", hasPin: !!pinStored });   // PINs never leave the server
+      if (req.method === "GET") {
+        const list = await all();
+        const plain = list.filter(x => x.pinStored && !isHashed(x.pinStored));   // convert any plain PIN left in Airtable
+        for (let i = 0; i < plain.length; i += 10) {
+          try { await at(T.prof, { method: "PATCH", body: { records: plain.slice(i, i + 10).map(x => ({ id: x.id, fields: { [F.pPin]: normPin(x.pinStored) } })) } }); }
+          catch (e) { console.error("pin-migrate", e.message); }
+        }
+        return json({ profiles: list.map(pub) });
+      }
       const body = await req.json().catch(() => ({}));
       const list = await all();
       const roles = [ADMIN, "Instructor", OCC], discs = ["Esquí", "Snowboard", "Niños", "Grupo", "Freeride"];
       const check = (p, selfId) => {
         if (p.pin !== undefined) {
           if (!/^\d{4}$/.test(p.pin)) return "El PIN tiene que tener 4 cifras.";
-          const dup = list.find(x => x.pin === p.pin && x.id !== selfId);
+          const dup = list.find(x => samePin(x.pinStored, p.pin) && x.id !== selfId);
           if (dup) return `Ese PIN ya lo usa ${dup.name}.`;
         }
         if (p.role !== undefined && !roles.includes(p.role)) return "Rol no válido.";
         if (p.disciplines !== undefined && (!Array.isArray(p.disciplines) || p.disciplines.some(d => !discs.includes(d)))) return "Disciplinas no válidas.";
         if (p.email !== undefined && p.email !== "" && !validEmail(p.email)) return "Ese email no parece correcto.";
         if (p.phone !== undefined && p.phone !== "" && !waNumber(p.phone)) return "El WhatsApp tiene que llevar prefijo, por ejemplo +34 600 123 456.";
-        if (p.notify !== undefined && (!Array.isArray(p.notify) || p.notify.some(n => !["Email", "WhatsApp", "Reparto"].includes(n)))) return "Avisos no válidos.";
+        if (p.notify !== undefined && (!Array.isArray(p.notify) || p.notify.some(n => !["Email", "WhatsApp", "Push", "Reparto"].includes(n)))) return "Avisos no válidos.";
         return "";
       };
       const fieldsOf = p => {
         const o = {};
-        if (p.pin !== undefined) o[F.pPin] = p.pin;
+        if (p.pin !== undefined) o[F.pPin] = hashPin(p.pin);
         if (p.role !== undefined) o[F.pRole] = p.role;
         if (p.active !== undefined) o[F.pActive] = !!p.active;
         if (p.disciplines !== undefined) o[F.pDisc] = p.disciplines;
@@ -220,6 +260,7 @@ export default async (req, context) => {
         const cur = list.find(x => x.id === id); if (!cur) return err(404, "Ese perfil no existe.");
         const p = {};
         ["pin", "role", "active", "disciplines", "phone", "email", "notify"].forEach(k => { if (body[k] !== undefined) p[k] = k === "pin" ? String(body[k]) : body[k]; });
+        if (p.pin === "") delete p.pin;            // empty = keep the current PIN (it is never shown)
         const bad = check(p, id); if (bad) return err(400, bad);
         if (id === me.id && (p.active === false || (p.role && p.role !== ADMIN))) return err(400, "No puedes quitarte a ti mismo el acceso de administración.");
         if (adminsLeft(id, p) < 1) return err(400, "Tiene que quedar al menos una persona de administración activa.");
@@ -276,7 +317,7 @@ export default async (req, context) => {
         const S = setupState();
         const cards = people.filter(x => x.role !== OCC).map(x => {
           const mine = p.all.filter(o => o.prof.id === x.id && o.label === "clases"), roster = p.all.filter(o => o.prof.id === x.id && o.label === "reparto");
-          return { id: x.id, name: x.name, role: x.role, email: x.email, phone: x.phone, notify: x.notify,
+          return { id: x.id, name: x.name, role: x.role, email: x.email, phone: x.phone, notify: x.notify, pushDevices: x.push.length,
             count: mine[0]?.digest.count || 0, rosterCount: roster[0]?.digest.count || 0,
             message: mine[0] ? { subject: mine[0].digest.subject, text: mine[0].digest.text, waDay: mine[0].digest.waDay, waSummary: mine[0].digest.waSummary } : null,
             rosterMessage: roster[0] ? { subject: roster[0].digest.subject, text: roster[0].digest.text, waDay: roster[0].digest.waDay, waSummary: roster[0].digest.waSummary } : null,
@@ -297,7 +338,8 @@ export default async (req, context) => {
         for (const item of mine) {
           if (item.channel === "Email" && !S.emailReady) { sent.push("Email: falta configurar el envío de email en Netlify"); continue; }
           if (item.channel === "WhatsApp" && !S.whatsappReady) { sent.push("WhatsApp: falta configurar WhatsApp en Netlify"); continue; }
-          try { await deliver(item, { test: true }); sent.push(`${item.channel}: enviado a ${item.channel === "Email" ? item.to : "+" + item.to}`);
+          if (item.channel === "Push" && !S.pushReady) { sent.push("Notificación: falta configurar las claves VAPID en Netlify"); continue; }
+          try { await deliver(item, { test: true }); sent.push(`${item.channel}: enviado a ${item.channel === "Email" ? item.to : item.channel === "Push" ? item.to : "+" + item.to}`);
             try { await logWrite({ ...item, key: item.key + "|TEST" + Date.now() }, k, date, "Enviado", "Prueba de " + me.name); } catch {}
           } catch (e) { sent.push(`${item.channel}: error (${e.message})`); }
         }

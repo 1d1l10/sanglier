@@ -2,6 +2,7 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="robots" content="noindex,nofollow">
 <meta name="theme-color" content="#27396D">
+<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Sànglier Staff">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600;700&display=swap">
 <style>
@@ -635,8 +636,9 @@ const isShared=()=>U.me&&U.me.role===OCC;
 
 /* ================= DEMO API (used when the server can't be reached, e.g. in a preview) ================= */
 const DEMO={
-  profiles:[{pin:'0000',name:'Laia',role:ADMIN},{pin:'4444',name:'Xema',role:ADMIN},{pin:'1111',name:'Jasone',role:'Instructor'},
-    {pin:'2222',name:'Sanglier',role:OCC},{pin:'3333',name:'Jabata',role:OCC}],
+  /* demo only (never on the real site): no PINs here, the first digit picks the sample profile */
+  profiles:[{pin:'',name:'Laia',role:ADMIN},{pin:'',name:'Xema',role:ADMIN},{pin:'',name:'Jasone',role:'Instructor'},
+    {pin:'',name:'Sanglier',role:OCC},{pin:'',name:'Jabata',role:OCC}],
   team:['Xema','Zapico','Kike','Bakartxo','David','Jasone','Sanglier','Jabata'],
   rows:null,
   contact:{Laia:{email:'laia@ejemplo.com',phone:'+34 600 000 001',notify:['Email','WhatsApp','Reparto']},Xema:{email:'xema@ejemplo.com',phone:'',notify:['Email']},
@@ -674,11 +676,11 @@ const DEMO={
     if(!this.rows)this.build();
     const [route,id]=path.split('?')[0].split('/');const qs=new URLSearchParams(path.split('?')[1]||'');
     const me=U.me;
-    if(route==='login'){const p=this.profiles.find(x=>x.pin===body.pin);if(!p)throw new Error('PIN incorrecto.');
+    if(route==='login'){const p=this.profiles[Number(String(body.pin)[0])%this.profiles.length];if(!p)throw new Error('PIN incorrecto.');
       return {token:'demo',me:{id:'demo-'+p.name,name:p.name,role:p.role,photo:'',teaches:p.name!=='Laia'},laiaWa:'34600000000'};}
     if(route==='profiles'){
       if(!this.plist)this.plist=[...this.profiles.map(p=>({id:'demo-'+p.name,name:p.name,pin:p.pin,role:p.role,active:true,disciplines:p.role===OCC||p.name==='Laia'?[]:['Esquí'],photo:'',...(this.contact[p.name]||{email:'',phone:'',notify:[]})})),
-        ...['Zapico','Kike','Bakartxo','David'].map((n,i)=>({id:'demo-'+n,name:n,pin:String(5550+i),role:'Instructor',active:true,disciplines:i<2?['Snowboard']:['Esquí'],photo:'',...(this.contact[n]||{email:'',phone:'',notify:[]})}))];
+        ...['Zapico','Kike','Bakartxo','David'].map((n,i)=>({id:'demo-'+n,name:n,pin:'',role:'Instructor',active:true,disciplines:i<2?['Snowboard']:['Esquí'],photo:'',...(this.contact[n]||{email:'',phone:'',notify:[]})}))];
       if(method==='GET')return {profiles:[...this.plist].sort((a,b)=>a.name.localeCompare(b.name))};
       if(body&&body.pin&&!/^\d{4}$/.test(body.pin))throw new Error('El PIN tiene que tener 4 cifras.');
       if(body&&body.pin){const dup=this.plist.find(x=>x.pin===body.pin&&x.id!==id);if(dup)throw new Error(`Ese PIN ya lo usa ${dup.name}.`);}
@@ -839,6 +841,55 @@ const DEMO={
   }
 };
 
+
+/* ================= PUSH NOTIFICATIONS (this phone) ================= */
+const PUSH={state:'checking',busy:false,msg:''};
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const b64uToU8=s=>{const p='='.repeat((4-s.length%4)%4),b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0))};
+async function pushReg(){return navigator.serviceWorker.register('sw.js',{scope:'./'})}
+async function pushCheck(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){PUSH.state=isIOS&&!standalone()?'ios-install':'unsupported';return render()}
+  if(Notification.permission==='denied'){PUSH.state='denied';return render()}
+  try{const reg=await pushReg();const sub=await reg.pushManager.getSubscription();PUSH.state=sub&&Notification.permission==='granted'?'on':'off'}catch(e){PUSH.state='off'}
+  render();
+}
+async function pushOn(){
+  const perm=await Notification.requestPermission();          /* first, while the tap still counts (iPhone needs that) */
+  if(perm!=='granted'){PUSH.state=perm==='denied'?'denied':'off';throw new Error('Sin permiso para notificaciones.')}
+  const {key}=await api('push/key');
+  if(!key)throw new Error('Las notificaciones aún no están configuradas. Avisa a Laia.');
+  const reg=await pushReg();await navigator.serviceWorker.ready;
+  let sub=await reg.pushManager.getSubscription();
+  if(sub){const cur=sub.options&&sub.options.applicationServerKey;if(cur&&btoa(String.fromCharCode(...new Uint8Array(cur))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')!==key){await sub.unsubscribe();sub=null}}
+  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToU8(key)});
+  await api('push/subscribe',{method:'POST',body:{subscription:sub.toJSON()}});
+  PUSH.state='on';
+}
+async function pushOff(quiet){
+  try{const reg=await navigator.serviceWorker.getRegistration('./');const sub=reg&&await reg.pushManager.getSubscription();
+    if(sub){const ep=sub.endpoint;await sub.unsubscribe();if(U.token&&!U.demo)await api('push/unsubscribe',{method:'POST',body:{endpoint:ep}}).catch(()=>{})}}
+  catch(e){if(!quiet)throw e}
+  PUSH.state='off';
+}
+function pushSheet(){
+  const S=PUSH.state,b=PUSH.busy;
+  const body={
+    on:`<p>Las notificaciones están <b>activadas</b> en este móvil. Te llegará el aviso de tus clases la noche antes y por la mañana.</p>
+      <button class="btn huge primary" data-act="pushTest" ${b?'disabled':''}>Enviar una prueba</button>
+      <button class="btn block ghost danger" data-act="pushOff" ${b?'disabled':''}>Desactivar en este móvil</button>`,
+    off:`<p>Recibe en este móvil el aviso de tus clases: la noche antes y por la mañana. Gratis, sin WhatsApp ni email.</p>
+      <button class="btn huge primary" data-act="pushOn" ${b?'disabled':''}>${b?'Activando…':'Activar notificaciones'}</button>`,
+    'ios-install':`<p>En iPhone las notificaciones solo funcionan con la app en la pantalla de inicio:</p>
+      <ol><li>Toca <b>Compartir</b> (el cuadrado con la flecha) en Safari.</li><li>Elige <b>Añadir a pantalla de inicio</b>.</li><li>Abre la app desde el icono nuevo y vuelve a tocar 🔕.</li></ol>`,
+    denied:`<p>Este navegador tiene <b>bloqueadas</b> las notificaciones de esta web. Actívalas en los ajustes del navegador (Notificaciones) y vuelve a intentarlo.</p>`,
+    unsupported:`<p>Este navegador no permite notificaciones. Prueba con Chrome en Android, o en iPhone añade la app a la pantalla de inicio.</p>`,
+    checking:`<p>Comprobando…</p>`,
+  }[S]||'';
+  return sheet('Notificaciones',`<div class="form">${body}${PUSH.msg?`<p class="small muted">${esc(PUSH.msg)}</p>`:''}
+    <button class="btn block ghost" data-act="closeSheet">Cerrar</button></div>`,'Solo en este móvil');
+}
+
 /* ================= API ================= */
 async function api(path,{method='GET',body}={}){
   if(U.demo) return DEMO.call(path,method,body);
@@ -889,6 +940,7 @@ function header(){
   <header class="top"><div class="top-in">
     <img class="top-logo" src="${A.logoWhite}" alt="Eth Sanglier">
     <span class="who">${avatar(m.name,m.photo,'sm')}<span><b>${esc(m.name)}</b><small>${esc(m.role)}</small></span></span>
+    ${isShared()?'':`<button class="btn sm" data-act="pushSheet" aria-label="Notificaciones en este móvil">${PUSH.state==='on'?'🔔':'🔕'}</button>`}
     <button class="btn sm" data-act="logout">Salir</button></div>
     ${tabs.length?`<nav class="tabs" aria-label="Secciones">${tabs.map(([k,l])=>`<button class="tab" data-act="tab" data-tab="${k}" ${U.view===k?'aria-current="page"':''}>${l}</button>`).join('')}</nav>`:''}
   </header>`;
@@ -1112,7 +1164,7 @@ const DISC_PROF={'Esquí privado':'Esquí',Snowboard:'Snowboard',Niños:'Niños'
 const DURS=[1,1.5,2,3,4,5,6], STARTS=(()=>{const a=[];for(let m=9*60;m<=16*60+30;m+=30)a.push(pad(Math.floor(m/60))+':'+pad(m%60));return a})();
 const hmAdd=(t,min)=>{const m=toMin(t)+min;return pad(Math.floor(m/60))+':'+pad(m%60)};
 const hTxt=h=>String(h).replace('.',',')+' h';
-const NOTIFY=[['Email','Aviso por email'],['WhatsApp','Aviso por WhatsApp'],['Reparto','Recibe el reparto de Sanglier y Jabata']];
+const NOTIFY=[['Email','Aviso por email'],['WhatsApp','Aviso por WhatsApp'],['Push','Notificación en el móvil'],['Reparto','Recibe el reparto de Sanglier y Jabata']];
 function needProfiles(){
   if(U.profiles) return U.profiles;
   if(!U.pending.prof){U.pending.prof=true;api('profiles').then(d=>{U.profiles=d.profiles;delete U.pending.prof;render()}).catch(e=>{delete U.pending.prof;toast(e.message)})}
@@ -1123,7 +1175,7 @@ function profCard(p){
   return `<article class="prof ${p.active?'':'off'}" data-pid="${p.id}">
     <div class="prof-h">${avatar(p.name,p.photo)}<b>${esc(p.name)}</b><span class="pill ${p.role===OCC?'warn':p.role===ADMIN?'esp':''}">${esc(p.role)}</span>${p.active?'':'<span class="pill">Desactivado</span>'}${me?'<span class="pill ok">Tú</span>':''}</div>
     <div class="fields2">
-      <label class="field"><span>PIN</span><input class="inp pin-inp" id="pin-${p.id}" inputmode="numeric" maxlength="4" value="${esc(p.pin)}"></label>
+      <label class="field"><span>PIN ${p.hasPin===false?'· sin PIN':'· oculto'}</span><input class="inp pin-inp" id="pin-${p.id}" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Nuevo" value="${esc(p.newPin||'')}"></label>
       <label class="field"><span>Rol</span><select class="inp" id="role-${p.id}" ${me?'disabled':''}>${ROLES.map(r=>`<option ${r===p.role?'selected':''}>${r}</option>`).join('')}</select></label>
     </div>
     ${p.role!==OCC?`<div class="chips" role="group" aria-label="Disciplinas">${DISCS.map(d=>`<button type="button" class="chip sm" data-act="pDisc" data-id="${p.id}" data-v="${d}" aria-pressed="${p.disciplines.includes(d)}">${d}</button>`).join('')}</div>
@@ -1335,9 +1387,10 @@ function teamAvisosView(){
   const idle=d.cards.filter(c=>!cards.includes(c));
   const card=c=>{
     const hasMsg=c.message||c.rosterMessage, open=U.nopen===c.id+k;
-    const em=c.notify.includes('Email'),wa=c.notify.includes('WhatsApp');
+    const em=c.notify.includes('Email'),wa=c.notify.includes('WhatsApp'),pu=c.notify.includes('Push'),pd=c.pushDevices||0;
     const ch=[`<span class="pill ${em?(MSG.validEmail(c.email)?'ok':'bad'):''}">${em?(MSG.validEmail(c.email)?'Email · '+esc(c.email):'Email · falta'):'Email apagado'}</span>`,
-      `<span class="pill ${wa?(MSG.waNumber(c.phone)?'ok':'bad'):''}">${wa?(MSG.waNumber(c.phone)?'WhatsApp · +'+MSG.waNumber(c.phone):'WhatsApp · falta'):'WhatsApp apagado'}</span>`].join('');
+      `<span class="pill ${wa?(MSG.waNumber(c.phone)?'ok':'bad'):''}">${wa?(MSG.waNumber(c.phone)?'WhatsApp · +'+MSG.waNumber(c.phone):'WhatsApp · falta'):'WhatsApp apagado'}</span>`,
+      `<span class="pill ${pu?(pd?'ok':'bad'):''}">${pu?(pd?'Móvil · '+pd+(pd===1?' dispositivo':' dispositivos'):'Móvil · sin activar'):'Móvil apagado'}</span>`].join('');
     const lines=[c.count?`${when[0].toUpperCase()+when.slice(1)}: <b>${c.count} ${c.count===1?'clase':'clases'}</b>`:`Sin clases ${when}`,
       c.rosterCount?`Además recibe el reparto de Sanglier y Jabata (${c.rosterCount} ${c.rosterCount===1?'clase':'clases'})`:''].filter(Boolean).join(' · ');
     const msgs=open?`${c.message?`<div class="msgbox"><small>Email · ${esc(c.message.subject)}</small>${esc(c.message.text)}</div>
@@ -1417,6 +1470,7 @@ function sentSheet(){
 }
 function modalView(){
   if(!U.modal) return '';
+  if(U.modal.type==='push') return pushSheet();
   if(U.modal.type==='close') return closeSheet();
   if(U.modal.type==='sent') return sentSheet();
   if(U.modal.type==='newProf') return newProfSheet();
@@ -1462,7 +1516,7 @@ function startRec(){
 
 /* ================= ACTIONS ================= */
 function readMD(){const M=U.md,d=readDP('md-date'),t=$('md-start');if(d)M.date=d;if(t)M.start=t.value}
-function readProf(p){const pin=$('pin-'+p.id),role=$('role-'+p.id),em=$('email-'+p.id),ph=$('phone-'+p.id);if(pin)p.pin=pin.value.trim();if(role&&!role.disabled)p.role=role.value;if(em)p.email=em.value.trim();if(ph)p.phone=ph.value.trim()}
+function readProf(p){const pin=$('pin-'+p.id),role=$('role-'+p.id),em=$('email-'+p.id),ph=$('phone-'+p.id);if(pin)p.newPin=pin.value.trim();if(role&&!role.disabled)p.role=role.value;if(em)p.email=em.value.trim();if(ph)p.phone=ph.value.trim()}
 function readNew(){const N=U.modal.form,n=$('np-name'),p=$('np-pin'),e=$('np-email'),f=$('np-phone');if(n)N.name=n.value.trim();if(p)N.pin=p.value.trim();if(e)N.email=e.value.trim();if(f)N.phone=f.value.trim()}
 async function tryLogin(){
   const pin=U.pin;U.pin='';U.busy=true;render();
@@ -1529,7 +1583,8 @@ const ACT={
   refresh:()=>{invalidate();U.team=null;render()},
   pDisc:d=>{const p=U.profiles.find(x=>x.id===d.id);readProf(p);const i=p.disciplines.indexOf(d.v);i>=0?p.disciplines.splice(i,1):p.disciplines.push(d.v);render()},
   pSave:async d=>{const p=U.profiles.find(x=>x.id===d.id);readProf(p);
-    try{await api('profiles/'+d.id,{method:'PATCH',body:{pin:p.pin,role:p.role,disciplines:p.disciplines,email:p.email||'',phone:p.phone||'',notify:p.notify||[]}});toast(`${p.name} guardado`);U.profiles=null;U.team=null;U.notify=null;invalidate();render()}catch(e){toast(e.message)}},
+    if(p.newPin&&!/^\d{4}$/.test(p.newPin)){toast('El PIN tiene que tener 4 cifras.');return}
+    try{await api('profiles/'+d.id,{method:'PATCH',body:{...(p.newPin?{pin:p.newPin}:{}),role:p.role,disciplines:p.disciplines,email:p.email||'',phone:p.phone||'',notify:p.notify||[]}});toast(`${p.name} guardado`);U.profiles=null;U.team=null;U.notify=null;invalidate();render()}catch(e){toast(e.message)}},
   newClass:d=>openNC(d.d?{date:d.d}:{}),
   ncDisc:d=>{readNC();U.nc.discipline=U.nc.discipline===d.v?'':d.v;render()},
   ncLevel:d=>{readNC();U.nc.level=U.nc.level===d.v?'':d.v;render()},
@@ -1599,6 +1654,13 @@ const ACT={
       toast(`${N.name} creado · PIN ${N.pin}`);U.modal=null;U.profiles=null;U.team=null;U.notify=null;invalidate();render()}catch(e){N.saving=false;N.err=e.message;render()}},
   scrim:(d,el,e)=>{if(e.target===el&&!['close','newClass','moreDays'].includes(U.modal?.type)){U.modal=null;render()}},
 };
+Object.assign(ACT,{
+  pushSheet:()=>{PUSH.msg='';U.modal={type:'push'};render();if(PUSH.state==='checking')pushCheck()},
+  pushOn:async()=>{PUSH.busy=true;PUSH.msg='';render();try{await pushOn();await api('push/test',{method:'POST',body:{}}).catch(()=>{});toast('Notificaciones activadas')}catch(e){PUSH.msg=e.message}PUSH.busy=false;render()},
+  pushOff:async()=>{PUSH.busy=true;render();try{await pushOff();toast('Notificaciones desactivadas en este móvil')}catch(e){PUSH.msg=e.message}PUSH.busy=false;render()},
+  pushTest:async()=>{PUSH.busy=true;render();try{await api('push/test',{method:'POST',body:{}});PUSH.msg='Prueba enviada: debería llegar en unos segundos.'}catch(e){PUSH.msg=e.message}PUSH.busy=false;render()},
+});
+{const out=ACT.logout;ACT.logout=async(...a)=>{await pushOff(true);out(...a)}}   /* a shared phone stops getting the previous person's notices */
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el||el.tagName==='A')return;const fn=ACT[el.dataset.act];if(fn){e.preventDefault();fn(el.dataset,el,e)}});
 document.addEventListener('input',e=>{if(e.target.id==='rp-note'&&U.rep&&!REC)U.rep.note=e.target.value;if(e.target.id==='rp-by'&&U.rep)U.rep.by=e.target.value;if(e.target.id==='rp-cash'&&U.rep)U.rep.cash=e.target.value});
 document.addEventListener('change',e=>{if(e.target.id==='month-who'){U.monthWho=e.target.value;render()}
@@ -1609,6 +1671,7 @@ document.addEventListener('keydown',e=>{if(!U.me&&/^\d$/.test(e.key))ACT.key({k:
 /* restore a saved session (instructors stay signed in for 30 days) */
 try{const s=JSON.parse(store.get(TOKEN_KEY)||'null');if(s&&s.token){U.token=s.token;U.me=s.me;U.laiaWa=s.laiaWa||'';U.view=s.me.role===ADMIN?'panel':'hoy'}}catch(e){}
 render();
+pushCheck();
 })();
 </script>
 </body></html>

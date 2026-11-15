@@ -6,13 +6,16 @@
 //   NOTIFY_NIGHT     "HH:MM" Madrid time of the evening notice (default 20:00)  -> classes of tomorrow
 //   NOTIFY_MORNING   "HH:MM" Madrid time of the morning notice (default 07:30)  -> classes of today
 //   Email  (Resend):          RESEND_API_KEY, MAIL_FROM  e.g. "Eth Sànglier <avisos@ethsanglierskischool.com>", MAIL_REPLY_TO (optional)
-//   WhatsApp (Meta Cloud API): WA_TOKEN, WA_PHONE_ID, WA_TEMPLATE (default "aviso_clases"), WA_LANG (default "es")
+//   WhatsApp: WA_PROVIDER = meta | twilio, see staff-wa.mjs. WA_TEMPLATE (default "aviso_clases"), WA_LANG (default "es")
+//   Push (notifications on the phone, free): VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, see staff-push.mjs
 //   Client reminders (7 days / 2 days / 2 hours before): see staff-remind.mjs. Switches: NOTIFY_CLIENTS=1, NOTIFY_CLIENT_AT, NOTIFY_CLIENT_WA=1
 import { T, ADMIN, OCC, env, at, listAll, rowsFor, madridToday, madridHM, addDays, toMin, sel } from "./staff-core.mjs";
 import { digestFor, rosterFor, waNumber, validEmail } from "./staff-digest.mjs";
 import { runClients } from "./staff-remind.mjs";
+import { sendTemplate as waSend, waReady, waProvider } from "./staff-wa.mjs";
+import { pushReady, parseSubs, pushTo } from "./staff-push.mjs";
 
-const CHANNELS = ["Email", "WhatsApp"];
+const CHANNELS = ["Email", "WhatsApp", "Push"];
 const hmOf = (name, def) => { const v = env(name); return /^([01]\d|2[0-3]):[0-5]\d$/.test(v || "") ? v : def; };
 
 export function setupState() {
@@ -20,9 +23,9 @@ export function setupState() {
     on: env("NOTIFY_ON") === "1", dryRun: env("NOTIFY_DRYRUN") === "1",
     night: hmOf("NOTIFY_NIGHT", "20:00"), morning: hmOf("NOTIFY_MORNING", "07:30"),
     emailReady: !!(env("RESEND_API_KEY") && env("MAIL_FROM")),
-    whatsappReady: !!(env("WA_TOKEN") && env("WA_PHONE_ID")),
+    whatsappReady: waReady(), waProvider: waProvider(), pushReady: pushReady(),
     clients: env("NOTIFY_CLIENTS") === "1", clientAt: hmOf("NOTIFY_CLIENT_AT", "10:00"),
-    clientWa: env("NOTIFY_CLIENT_WA") === "1" && !!(env("WA_TOKEN") && env("WA_PHONE_ID")),
+    clientWa: env("NOTIFY_CLIENT_WA") === "1" && waReady(),
   };
 }
 
@@ -32,7 +35,7 @@ export async function recipients() {
   return recs.map(r => {
     const f = r.fields;
     return { id: r.id, name: f["Nombre"] || "", role: sel(f["Rol"]), active: !!f["Activo"], disciplines: f["Disciplinas"] || [],
-      email: String(f["Email"] || "").trim(), phone: f["Teléfono"] || "", notify: f["Avisos"] || [] };
+      email: String(f["Email"] || "").trim(), phone: f["Teléfono"] || "", notify: f["Avisos"] || [], push: parseSubs(f["Push"]) };
   }).filter(p => p.active && p.name);
 }
 const teaches = p => p.role === "Instructor" || (p.role === ADMIN && p.disciplines.length > 0);
@@ -53,6 +56,9 @@ export async function plan(kind, date, people) {
       if (c === "Email") {
         if (!validEmail(p.email)) { skipped.push({ name: p.name, reason: "Falta el email", label, channel: c }); continue; }
         out.push({ key: `${date}|${kind}|${p.id}|Email${label === "reparto" ? "|R" : ""}`, prof: p, channel: c, to: p.email, digest, label });
+      } else if (c === "Push") {
+        if (!p.push.length) { skipped.push({ name: p.name, reason: "Sin notificaciones en el móvil", label, channel: c }); continue; }
+        out.push({ key: `${date}|${kind}|${p.id}|Push${label === "reparto" ? "|R" : ""}`, prof: p, channel: c, to: p.push.length + " móvil(es)", digest, label });
       } else {
         const n = waNumber(p.phone);
         if (!n) { skipped.push({ name: p.name, reason: "Falta el WhatsApp", label, channel: c }); continue; }
@@ -81,30 +87,14 @@ export async function sendEmail(to, d) {
   return j.id || "";
 }
 async function sendWhatsApp(to, name, d) {
-  const r = await fetch(`https://graph.facebook.com/v21.0/${env("WA_PHONE_ID")}/messages`, {
-    method: "POST", headers: { authorization: `Bearer ${env("WA_TOKEN")}`, "content-type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", to, type: "template", template: {
-      name: env("WA_TEMPLATE") || "aviso_clases", language: { code: env("WA_LANG") || "es" },
-      components: [{ type: "body", parameters: [name, d.waDay, d.waSummary].map(t => ({ type: "text", text: String(t).replace(/[\n\t]+/g, " ").replace(/ {4,}/g, "   ").slice(0, 900) })) }] } }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error?.message || `WhatsApp ${r.status}`);
-  return j?.messages?.[0]?.id || "";
+  return waSend(to, env("WA_TEMPLATE") || "aviso_clases", env("WA_LANG") || "es", [name, d.waDay, d.waSummary], d.text);
 }
 /** A WhatsApp template with plain text parameters (client reminders: one template per reminder and language). */
-export async function sendTemplate(to, template, lang, params) {
-  const r = await fetch(`https://graph.facebook.com/v21.0/${env("WA_PHONE_ID")}/messages`, {
-    method: "POST", headers: { authorization: `Bearer ${env("WA_TOKEN")}`, "content-type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", to, type: "template", template: { name: template, language: { code: lang },
-      components: [{ type: "body", parameters: params.map(t => ({ type: "text", text: String(t).replace(/[\n\t]+/g, " ").replace(/ {4,}/g, "   ").slice(0, 900) })) }] } }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error?.message || `WhatsApp ${r.status}`);
-  return j?.messages?.[0]?.id || "";
-}
+export const sendTemplate = (to, template, lang, params) => waSend(to, template, lang, params);
 export async function deliver(item, { test = false } = {}) {
   const d = test ? { ...item.digest, subject: "[PRUEBA] " + item.digest.subject } : item.digest;
   if (item.channel === "Email") return sendEmail(item.to, d);
+  if (item.channel === "Push") return String(await pushTo(item.prof, { title: d.subject, body: d.waSummary, url: "/staff/", tag: item.key }));
   return sendWhatsApp(item.to, item.prof.name, d);
 }
 
@@ -155,6 +145,7 @@ export async function runDue({ today = madridToday(), hm = madridHM(), nowMs = D
         if ((log.errors[item.key] || 0) >= 3) continue;    // gave up after 3 failed attempts
         if (item.channel === "Email" && !S.emailReady) { out.result.push({ key: item.key, status: "Saltado: email sin configurar" }); continue; }
         if (item.channel === "WhatsApp" && !S.whatsappReady) { out.result.push({ key: item.key, status: "Saltado: WhatsApp sin configurar" }); continue; }
+        if (item.channel === "Push" && !S.pushReady) { out.result.push({ key: item.key, status: "Saltado: notificaciones sin configurar" }); continue; }
         try {
           if (S.dryRun) { await logWrite(item, kind, date, "Simulado", "NOTIFY_DRYRUN"); out.result.push({ key: item.key, status: "Simulado" }); continue; }
           const id = await deliver(item);
@@ -175,4 +166,16 @@ export async function runDue({ today = madridToday(), hm = madridHM(), nowMs = D
   }
   if (!out.ran.length && !out.result.length) return { skipped: "Fuera de horario o nada que enviar." };
   return out;
+}
+
+/** Short alert to every active administrator on their phones (push). Never throws. */
+export async function alertAdmins(title, body) {
+  if (!pushReady()) return 0;
+  let n = 0;
+  try {
+    for (const p of (await recipients()).filter(x => x.role === ADMIN && x.push.length)) {
+      try { await pushTo(p, { title, body, url: "/staff/", tag: "alerta" }); n++; } catch (e) { console.error("alert", p.name, e.message); }
+    }
+  } catch (e) { console.error("alertAdmins", e.message); }
+  return n;
 }

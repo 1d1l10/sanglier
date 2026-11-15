@@ -1,10 +1,47 @@
 Standalone Netlify site for the Eth Sanglier staff app.
+No npm packages: you can still drag this folder onto Netlify, or link the GitHub repo for automatic deploys.
 
-1. Drag this whole folder (or the zip) onto the Netlify project's Deploys page.
-2. Project configuration > Environment variables, add:
-   AIRTABLE_TOKEN   (same token the website uses; needs read+write on Reservas, Ocupacion, Profesores, Avisos)
-   AIRTABLE_BASE_ID appCPMJQxYGMUZwOu
-   STAFF_SECRET     any long random text
-   LAIA_WHATSAPP    digits only, e.g. 34600123456
-3. Deploy again after adding the variables (Deploys > Trigger deploy), then open /staff/
+1. Drag this whole folder (or the zip) onto the Netlify project's Deploys page
+   (or: Project configuration > Build & deploy > Link repository > github.com/1d1l10/sanglier, no build command, publish directory ".").
+
+2. Project configuration > Environment variables. Mark the keys/tokens as "secret".
+
+   Required
+     AIRTABLE_TOKEN    same token the website uses (read+write on base appCPMJQxYGMUZwOu)
+     AIRTABLE_BASE_ID  appCPMJQxYGMUZwOu
+     STAFF_SECRET      any long random text. Changing it signs EVERYONE out.
+     LAIA_WHATSAPP     digits only, e.g. 34600123456
+
+   Recommended
+     PIN_PEPPER        another long random text, used to hash the PINs. Set it BEFORE the first deploy of this
+                       version and never change it afterwards (if missing, STAFF_SECRET is used; then never change that).
+
+   Push notifications on the phones (free)
+     VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY   run once:  node scripts/vapid-keys.mjs   and paste both. Never change them.
+     VAPID_SUBJECT     optional, e.g. mailto:info@ethsanglierskischool.com
+
+   WhatsApp (choose one provider)
+     WA_PROVIDER       meta | twilio
+     Meta:   WA_TOKEN, WA_PHONE_ID, WA_TEMPLATE (default aviso_clases), WA_LANG (default es)
+     Twilio: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WA_FROM (e.g. 14155238886) or TWILIO_MESSAGING_SERVICE_SID,
+             TWILIO_TEMPLATES = {"aviso_clases":"HX...","recordatorio_7d_es":"HX...", ...}  (Content SIDs of approved templates)
+
+   Email (Resend): RESEND_API_KEY, MAIL_FROM, MAIL_REPLY_TO (optional)
+   Sending switches: NOTIFY_ON=1, NOTIFY_DRYRUN=1 (test), NOTIFY_CLIENTS=1, NOTIFY_CLIENT_WA=1 (see netlify/lib/staff-notify.mjs)
+
+3. Deploy again after adding variables (Deploys > Trigger deploy), then open /staff/
 4. Functions list should show: staff, notify.
+
+Security, in short
+- The PIN stays 4 digits (gloves). Protection is on the server: PINs are stored hashed in Airtable (never readable,
+  not even by the admin screen), 5 wrong PINs lock a connection for 15 min, 30 wrong PINs in an hour lock the PIN
+  screen for 20 min and alert the admins by push. Counters live in the Airtable table "Accesos" (delete a row to unlock).
+- Changing someone's PIN signs that person out on every phone. Deactivating a profile cuts access immediately.
+- After this version is deployed everyone has to type their PIN once more.
+
+Push notifications for the team
+- Each person taps the bell (🔕) at the top of the app > "Activar notificaciones".
+- iPhone: first Safari > Share > "Add to Home Screen", open the app from that icon, then tap the bell.
+- The admin sees in Avisos who has it switched on ("Móvil · 1 dispositivo").
+
+Tests (no network): node --test tests/*.test.mjs
