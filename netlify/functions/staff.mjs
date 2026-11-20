@@ -12,7 +12,7 @@ import { T, F, TO_CONFIRM, PAID, LOST, LEVELS, ADMIN, OCC, q, toMin, isHM, isDat
 import { setupState, plan, deliver, recentLog, recipients, logWrite, sendEmail, clientIO, alertAdmins } from "../lib/staff-notify.mjs";
 import { hashPin, isHashed, normPin, pinVersion, samePin, loginGate, loginFailed, loginOk } from "../lib/staff-auth.mjs";
 import { pushReady, cleanSubscription, addSub, removeSub, readSubs, pushTo } from "../lib/staff-push.mjs";
-import { upcoming, sampleMessages, confirmAttendance, langOf } from "../lib/staff-remind.mjs";
+import { upcoming, sampleMessages, confirmAttendance, langOf, loadPoints } from "../lib/staff-remind.mjs";
 import { waNumber, validEmail } from "../lib/staff-digest.mjs";
 import { Refused, createClass, extendClass, addDays_ as addBookingDays, recentChanges } from "../lib/staff-classes.mjs";
 import { parseAmount, checkCash, applyCash, cashLedger, handover, moneyPanel } from "../lib/staff-cash.mjs";
@@ -348,14 +348,15 @@ export default async (req, context) => {
       if (sub === "clients" && req.method === "GET" && !pid) {      // reminders to clients: what is coming, what went out, who has not confirmed
         const S = setupState(), lang = langOf(url.searchParams.get("lang"));
         const data = await upcoming({ S, today: madridToday(), hm: madridHM(), io: clientIO });
-        const samples = sampleMessages({ lang, date: addDays(madridToday(), 7) }).map(m => ({ kind: m.kind, subject: m.subject, text: m.text, mapUrl: m.mapUrl }));
-        return json({ setup: { on: S.on, clients: S.clients, dryRun: S.dryRun, clientAt: S.clientAt, emailReady: S.emailReady, clientWa: S.clientWa }, ...data, samples });
+        const points = await loadPoints();
+        const samples = sampleMessages({ lang, date: addDays(madridToday(), 7), points }).map(m => ({ kind: m.kind, subject: m.subject, text: m.text, mapUrl: m.mapUrl }));
+        return json({ setup: { on: S.on, clients: S.clients, dryRun: S.dryRun, clientAt: S.clientAt, clientNight: S.clientNight, clientKinds: S.clientKinds, emailReady: S.emailReady, clientWa: S.clientWa }, ...data, samples });
       }
       if (sub === "clients" && req.method === "POST" && pid === "test") {   // send one sample reminder to an address the admin types
         const { kind = "c7", lang = "es", to = "" } = await req.json().catch(() => ({}));
         if (!validEmail(to)) return err(400, "Escribe un email válido.");
         if (!setupState().emailReady) return err(400, "Falta configurar el envío de email en Netlify.");
-        const m = sampleMessages({ lang: langOf(lang), name: firstName(me.name), date: addDays(madridToday(), kind === "c7" ? 7 : kind === "c2" ? 2 : 0) }).find(x => x.kind === kind);
+        const m = sampleMessages({ lang: langOf(lang), name: firstName(me.name), date: addDays(madridToday(), kind === "c7" ? 7 : kind === "c1" ? 1 : 0), points: await loadPoints() }).find(x => x.kind === kind);
         if (!m) return err(400, "Tipo de aviso no válido.");
         await sendEmail(to, { ...m, subject: "[PRUEBA] " + m.subject });
         return json({ ok: true, sent: `Enviado a ${to}` });

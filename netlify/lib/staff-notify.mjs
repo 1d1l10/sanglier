@@ -11,7 +11,7 @@
 //   Client reminders (7 days / 2 days / 2 hours before): see staff-remind.mjs. Switches: NOTIFY_CLIENTS=1, NOTIFY_CLIENT_AT, NOTIFY_CLIENT_WA=1
 import { T, ADMIN, OCC, env, at, listAll, rowsFor, madridToday, madridHM, addDays, toMin, sel } from "./staff-core.mjs";
 import { digestFor, rosterFor, waNumber, validEmail } from "./staff-digest.mjs";
-import { runClients } from "./staff-remind.mjs";
+import { runClients, clientKinds } from "./staff-remind.mjs";
 import { sendTemplate as waSend, waReady, waProvider } from "./staff-wa.mjs";
 import { pushReady, parseSubs, pushTo } from "./staff-push.mjs";
 
@@ -24,7 +24,7 @@ export function setupState() {
     night: hmOf("NOTIFY_NIGHT", "20:00"), morning: hmOf("NOTIFY_MORNING", "07:30"),
     emailReady: !!(env("RESEND_API_KEY") && env("MAIL_FROM")),
     whatsappReady: waReady(), waProvider: waProvider(), pushReady: pushReady(),
-    clients: env("NOTIFY_CLIENTS") === "1", clientAt: hmOf("NOTIFY_CLIENT_AT", "10:00"),
+    clients: env("NOTIFY_CLIENTS") === "1", clientAt: hmOf("NOTIFY_CLIENT_AT", "10:00"), clientNight: hmOf("NOTIFY_CLIENT_NIGHT", "19:00"), clientKinds: clientKinds(),
     clientWa: env("NOTIFY_CLIENT_WA") === "1" && waReady(),
   };
 }
@@ -116,7 +116,7 @@ async function logFor(date, kind) {
 export async function recentClientLog(today) {
   const recs = await listAll(encodeURIComponent(T.log), { filterByFormula: `AND(IS_AFTER({Enviado el}, '${addDays(today, -12)}'), FIND('|c', {Clave}))` }, { byName: true });
   return recs.map(r => { const [date, kind, resId] = String(r.fields["Clave"] || "").split("|"); return { date, kind, resId, status: r.fields["Estado"] || "" }; })
-    .filter(l => ["c7", "c2", "c2h"].includes(l.kind));
+    .filter(l => ["c7", "c1", "c2h"].includes(l.kind));
 }
 export const clientIO = { logFor, logWrite, sendEmail, sendTemplate, recentClientLog };
 export async function recentLog(n = 30) {

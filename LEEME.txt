@@ -28,6 +28,8 @@ No npm packages: you can still drag this folder onto Netlify, or link the GitHub
 
    Email (Resend): RESEND_API_KEY, MAIL_FROM, MAIL_REPLY_TO (optional)
    Sending switches: NOTIFY_ON=1, NOTIFY_DRYRUN=1 (test), NOTIFY_CLIENTS=1, NOTIFY_CLIENT_WA=1 (see netlify/lib/staff-notify.mjs)
+   Client reminders: NOTIFY_CLIENT_AT (default 10:00, the 7-day one), NOTIFY_CLIENT_NIGHT (default 19:00, the evening-before one),
+                     NOTIFY_CLIENT_KINDS (default "c7,c1"; add ",c2h" for one 2 hours before each class)
 
 3. Deploy again after adding variables (Deploys > Trigger deploy), then open /staff/
 4. Functions list should show: staff, notify.
@@ -43,5 +45,13 @@ Push notifications for the team
 - Each person taps the bell (🔕) at the top of the app > "Activar notificaciones".
 - iPhone: first Safari > Share > "Add to Home Screen", open the app from that icon, then tap the bell.
 - The admin sees in Avisos who has it switched on ("Móvil · 1 dispositivo").
+
+Reminders to clients (paid bookings only, by email, and by WhatsApp if NOTIFY_CLIENT_WA=1)
+- 7 days before: "we are waiting for you" + a button to tell Laia on WhatsApp anything they need for the class.
+- The evening before: how to get there: exact map, the directions of that meeting point, Laia's phone.
+- Directions per meeting point: Airtable table "Puntos de encuentro" (one line per tip, ES/EN/FR/CA, exact Google Maps link).
+  The name must appear in the booking's "Punto de encuentro". Changes apply at once, no deploy.
+- WhatsApp needs one approved template per reminder and language: recordatorio_7d_es, recordatorio_1d_es, … (_en, _fr, _ca)
+  with 4 variables: {{1}} name, {{2}} day and time, {{3}} meeting point, {{4}} link (7d: Laia's WhatsApp; 1d: map).
 
 Tests (no network): node --test tests/*.test.mjs
