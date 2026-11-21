@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 process.env.AIRTABLE_TOKEN = "test"; process.env.AIRTABLE_BASE_ID = "appTEST"; process.env.STAFF_SECRET = "test-secret-123";
-const ID = { Nombre: "fld4dbEx82WauW6Hh", PIN: "fldkXe7rk5pkMrxH6", Rol: "fldjkm5wlLykpVzRF", Activo: "fldH4nqOJIpyaWKIC" };
+const ID = { Nombre: "fld4dbEx82WauW6Hh", PIN: "fldkXe7rk5pkMrxH6", "PIN cifrado": "fldo2B46LVTqc1Djl", Rol: "fldjkm5wlLykpVzRF", Activo: "fldH4nqOJIpyaWKIC" };
 const PROF = "tbl37OfR6AJSvGzf8";
 const db = {
   [PROF]: [
@@ -73,13 +73,26 @@ test("5 wrong PINs lock that connection for 15 minutes, even with the right PIN;
   assert.ok(db.Accesos.every(r => !/6\.6\.6\.6/.test(r.fields.Clave)), "raw IPs are not stored");
 });
 
-test("the admin never receives PINs, plain ones are converted when the list is opened", async () => {
+test("admins see the PINs (from the encrypted copy), never the hashes; Airtable holds no PIN in clear", async () => {
   const { data } = await call("login", { method: "POST", body: { pin: "1234" } });
   const r = await call("profiles", { token: data.token });
   assert.equal(r.status, 200);
-  assert.ok(r.data.profiles.every(p => p.pin === "" && p.hasPin === true));
-  assert.ok(!JSON.stringify(r.data).includes("h1:"));
+  const by = Object.fromEntries(r.data.profiles.map(p => [p.name, p]));
+  assert.equal(by.Laia.pin, "1234"); assert.equal(by.Jasone.pin, "5678");
+  assert.ok(!JSON.stringify(r.data).includes("h1:") && !JSON.stringify(r.data).includes("v1:"));
   assert.match(pinOf("Jasone"), /^h1:/);
+  const seal = db[PROF].find(x => x.fields.Nombre === "Jasone").fields["PIN cifrado"];
+  assert.match(seal, /^v1:/); assert.ok(!seal.includes("5678"));
+  const { data: jd } = await call("login", { method: "POST", body: { pin: "5678" } });
+  assert.equal((await call("profiles", { token: jd.token })).status, 403, "instructors cannot see the list");
+});
+
+test("a hashed PIN with no encrypted copy shows as unknown until that person logs in", async () => {
+  const row = db[PROF].find(x => x.fields.Nombre === "Jasone"); delete row.fields["PIN cifrado"];
+  const admin = (await call("login", { method: "POST", body: { pin: "1234" } })).data.token;
+  assert.equal((await call("profiles", { token: admin })).data.profiles.find(p => p.name === "Jasone").pin, "");
+  await call("login", { method: "POST", body: { pin: "5678" } });
+  assert.equal((await call("profiles", { token: admin })).data.profiles.find(p => p.name === "Jasone").pin, "5678");
 });
 
 test("duplicate PINs are refused against hashed values; changing a PIN signs that person out", async () => {

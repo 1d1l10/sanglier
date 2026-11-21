@@ -9,7 +9,7 @@ export const T = {
 };
 export const F = {
   // Profesores
-  pName: "fld4dbEx82WauW6Hh", pPin: "fldkXe7rk5pkMrxH6", pRole: "fldjkm5wlLykpVzRF", pActive: "fldH4nqOJIpyaWKIC",
+  pName: "fld4dbEx82WauW6Hh", pPin: "fldkXe7rk5pkMrxH6", pPinSeal: "fldo2B46LVTqc1Djl", pRole: "fldjkm5wlLykpVzRF", pActive: "fldH4nqOJIpyaWKIC",
   pPhoto: "fldUE4GsR6c0JxtbH", pDisc: "fldCOKiDpAByxw4ux", pPhone: "fldDihglM8jvvdeoZ",
   // Ocupación
   oClient: "fldA9b0cbNJlUBKKi", oDate: "fldHfTnPr3dr0rJxh", oProf: "fldEayRVoSxmYRbJg", oStart: "fldTraTS6DHe2q5eZ",

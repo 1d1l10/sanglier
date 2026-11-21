@@ -7,7 +7,9 @@
 //   2. Wrong PINs are counted in the Airtable table "Accesos", so the limit holds across every server
 //      instance: 5 wrong tries from one connection = 15 minutes locked; 30 wrong tries in an hour from
 //      anywhere = the PIN screen locks for 20 minutes and the administrators get an alert.
-//   3. Every login token carries a fingerprint of the PIN it was issued for: changing someone's PIN
+//   3. So that Administración can still look PINs up (people forget them), each PIN also has an encrypted copy
+//      in Profesores ▸ "PIN cifrado" (AES-256-GCM, key derived from PIN_PEPPER). Airtable alone reveals nothing.
+//   4. Every login token carries a fingerprint of the PIN it was issued for: changing someone's PIN
 //      signs that person out on every phone at once.
 import crypto from "node:crypto";
 import { env, at, listAll } from "./staff-core.mjs";
@@ -23,6 +25,24 @@ export const normPin = stored => !stored ? "" : isHashed(stored) ? String(stored
 /** Short fingerprint put inside the login token. Same before and after a legacy PIN is converted. */
 export const pinVersion = stored => crypto.createHash("sha256").update(normPin(stored)).digest("base64url").slice(0, 12);
 export const samePin = (stored, pin) => !!stored && normPin(stored) === hashPin(pin);
+
+/* ---------------- encrypted copy, readable only by the server (for the admin's PIN list) ---------------- */
+const sealKey = () => Buffer.from(crypto.hkdfSync("sha256", String(pepper()), "eth-sanglier", "pin-view", 32));
+export function sealPin(pin) {
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv("aes-256-gcm", sealKey(), iv);
+  const ct = Buffer.concat([c.update(String(pin)), c.final()]);
+  return "v1:" + Buffer.concat([iv, ct, c.getAuthTag()]).toString("base64url");
+}
+/** The PIN in clear, or "" if missing, tampered with, or sealed with another key. */
+export function openPin(v) {
+  try {
+    if (!/^v1:/.test(String(v || ""))) return "";
+    const b = Buffer.from(String(v).slice(3), "base64url"), iv = b.subarray(0, 12), tag = b.subarray(b.length - 16);
+    const d = crypto.createDecipheriv("aes-256-gcm", sealKey(), iv); d.setAuthTag(tag);
+    const pin = Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]).toString();
+    return /^\d{4}$/.test(pin) ? pin : "";
+  } catch { return ""; }
+}
 
 /* ---------------- wrong-PIN limits ---------------- */
 const TABLE = "Accesos";

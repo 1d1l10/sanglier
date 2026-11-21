@@ -181,6 +181,7 @@ table{border-collapse:collapse;width:100%}
 .row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 14px;min-height:var(--tap);border:2px solid var(--line);border-radius:16px;background:var(--surface);text-align:left;width:100%}
 .row .grow{flex:1;min-width:0;display:grid;gap:2px}
 .tbl-wrap{overflow-x:auto}
+.pins{width:100%;border-collapse:collapse}.pins th,.pins td{text-align:left;padding:9px 6px;border-bottom:1px solid var(--line)}.pins b{font-size:1.15rem;letter-spacing:.15em}
 .tbl{min-width:640px;font-size:.95rem}
 .tbl th,.tbl td{padding:12px 8px;border-bottom:1px solid var(--line);text-align:left}
 .tbl th{font-weight:700;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em}
@@ -322,6 +323,8 @@ audio{width:100%;max-width:100%}
 .cashgrp{border-top:1px solid var(--line);padding-top:10px;display:grid;gap:6px}.cashgrp:first-of-type{border-top:0;padding-top:0}
 .dp{display:grid;grid-template-columns:.8fr 1.5fr 1fr;gap:8px}
 .sumline{font-weight:700;background:var(--sunk);border-radius:12px;padding:10px 14px}
+.slot{display:grid;gap:8px;border:1px solid var(--line);border-radius:14px;padding:12px;background:var(--surface)}
+.slot-h{display:flex;align-items:center;justify-content:space-between;gap:10px}.slot-h b{font-size:1.05rem}
 </style></head><body>
 
 <div id="app"><p style="font:600 18px/1.4 system-ui,sans-serif;color:#27396D;text-align:center;padding:48px 24px">Cargando la app del equipo…<br><small style="font-weight:400;color:#556">Si esta pantalla no cambia en unos segundos, avisa a Klaros.</small></p></div>
@@ -755,26 +758,24 @@ const DEMO={
     if(route==='classes'){
       if(me.role===OCC)throw new Error('Este perfil no crea clases. Habla con Laia.');
       const adm=me.role===ADMIN,sub=path.split('?')[0].split('/')[2];
+      const SL=body?(body.slots||Array.from({length:body.days||1},(_,i)=>({date:addDays(body.date,i),start:body.start,hours:body.hours}))).map(x=>({...x,end:hmAdd(x.start,Math.round(x.hours*60))})):[];
+      const chk=(t,ign)=>SL.forEach(x=>{if(x.date<today())throw new Error('Esa fecha ya ha pasado.');if(toMin(x.end)>18*60)throw new Error('La clase tiene que estar entre las 08:00 y las 18:00.');this.conf(t,[x.date],x.start,x.end,ign)});
       if(!id){
         const teacher=adm?body.teacher:me.name;
         if(!body.name||body.name.length<2)throw new Error('Escribe el nombre del cliente.');
         if(!CLS_DISC.includes(body.discipline))throw new Error('Elige la disciplina.');
         if(!teacher)throw new Error('Elige el profesor.');
         if(body.phone&&!MSG.waNumber(body.phone))throw new Error('El teléfono tiene que llevar prefijo, por ejemplo +34 600 123 456.');
-        const end=hmAdd(body.start,Math.round(body.hours*60));
-        if(body.date<today())throw new Error('Esa fecha ya ha pasado.');
-        if(toMin(end)>18*60)throw new Error('La clase tiene que estar entre las 08:00 y las 18:00.');
-        const dates=Array.from({length:body.days||1},(_,i)=>addDays(body.date,i));
-        this.conf(teacher,dates,body.start,end);
+        chk(teacher);const dates=SL.map(x=>x.date);
         let price=null,paid=0;
         if(adm&&body.price!==undefined&&body.price!==''&&body.price!==null){price=Number(String(body.price).replace(',','.'));paid=Number(String(body.paid||0).replace(',','.'));
           if(!Number.isFinite(price)||price<0||price>20000)throw new Error('El precio tiene que estar entre 0 y 20.000 €.');
           if(!Number.isFinite(paid)||paid<0||paid>price)throw new Error('Lo pagado no puede ser más que el precio.');}
         const n=(this.mn=(this.mn||9)+1), ref='MAN-'+String(n).padStart(3,'0'), dg=MSG.waNumber(body.phone);
-        dates.forEach((date,i)=>this.rows.push({id:'demo'+Date.now()+i,teacher,date,start:body.start,end,wholeDay:false,block:false,hours:body.hours,reason:'',done:false,level:'',summary:'',closedBy:'',
+        SL.forEach((x,i)=>this.rows.push({id:'demo'+Date.now()+i,teacher,date:x.date,start:x.start,end:x.end,wholeDay:false,block:false,hours:x.hours,reason:'',done:false,level:'',summary:'',closedBy:'',
           booking:{ref,discipline:body.discipline,levelIn:body.level,pax:body.pax,language:body.language,gear:'',client:body.name,wa:dg?'https://wa.me/'+dg:'',meeting:body.meeting||'',resId:'R'+ref,pending:price==null?null:Math.max(0,price-paid)},cash:0}));
         this.logChange(`${me.name} · ${adm?'creada':'creada por el profe, falta confirmar y cobrar'} · ${ref}`);
-        return {ok:true,ref,dates,start:body.start,end};
+        return {ok:true,ref,dates,start:SL[0].start,end:SL[0].end};
       }
       const r=this.rows.find(x=>x.id===id);if(!r||r.block)throw new Error('Eso es un bloqueo, no una clase.');
       if(!adm&&r.teacher!==me.name)throw new Error('Esa clase no es tuya.');
@@ -784,13 +785,10 @@ const DEMO={
         this.conf(r.teacher,[r.date],r.start,ne,r.id);
         this.logChange(`${me.name} · +${hTxt(m/60)} · ${r.booking.client} · ${r.start}-${r.end} → ${r.start}-${ne} · ${r.booking.ref}`);
         r.end=ne;r.hours=(toMin(ne)-toMin(r.start))/60;return {ok:true,end:ne};}
-      if(sub==='days'){const end=hmAdd(body.start,Math.round(body.hours*60));
-        if(body.date<today())throw new Error('Esa fecha ya ha pasado.');
-        if(toMin(end)>18*60)throw new Error('La clase tiene que estar entre las 08:00 y las 18:00.');
-        const dates=Array.from({length:body.days||1},(_,i)=>addDays(body.date,i));this.conf(r.teacher,dates,body.start,end);
-        dates.forEach((date,i)=>this.rows.push({...JSON.parse(JSON.stringify(r)),id:'demo'+Date.now()+i,date,start:body.start,end,hours:body.hours,done:false,level:'',summary:'',closedBy:''}));
+      if(sub==='days'){chk(r.teacher);const dates=SL.map(x=>x.date);
+        SL.forEach((x,i)=>this.rows.push({...JSON.parse(JSON.stringify(r)),id:'demo'+Date.now()+i,date:x.date,start:x.start,end:x.end,hours:x.hours,done:false,level:'',summary:'',closedBy:''}));
         this.logChange(`${me.name} · +${dates.length} ${dates.length>1?'días':'día'} · ${r.booking.client} · ${r.booking.ref}`);
-        return {ok:true,dates,start:body.start,end};}
+        return {ok:true,dates,start:SL[0].start,end:SL[0].end};}
     }
     if(route==='dashboard'){
       const t=today(),ms=t.slice(0,8)+'01',me2=monthEnd(t),cls=this.rows.filter(r=>!r.block),now=nowHM();
@@ -1165,7 +1163,7 @@ function panelView(){
 
 /* ---------------- admin: profiles ---------------- */
 const DISCS=['Esquí','Snowboard','Niños','Grupo','Freeride'], ROLES=[ADMIN,'Instructor',OCC];
-const CLS_DISC=['Esquí privado','Snowboard','Niños','Grupo','Freeride'], LANGS=['Español','English','Français','Català'], MEETS=['Baqueira 1500','Tanau 1700','Bonaigua','Orri','Por confirmar'];
+const CLS_DISC=['Esquí privado','Snowboard','Niños','Grupo','Freeride'], LANGS=['Español','English','Français','Català'], MEETS=['Baqueira 1500','Baqueira 1800','Tanau 1700','Bonaigua','Orri','Por confirmar'];
 const DISC_PROF={'Esquí privado':'Esquí',Snowboard:'Snowboard',Niños:'Niños',Grupo:'Grupo',Freeride:'Freeride'};
 const DURS=[1,1.5,2,3,4,5,6], STARTS=(()=>{const a=[];for(let m=9*60;m<=16*60+30;m+=30)a.push(pad(Math.floor(m/60))+':'+pad(m%60));return a})();
 const hmAdd=(t,min)=>{const m=toMin(t)+min;return pad(Math.floor(m/60))+':'+pad(m%60)};
@@ -1181,7 +1179,7 @@ function profCard(p){
   return `<article class="prof ${p.active?'':'off'}" data-pid="${p.id}">
     <div class="prof-h">${avatar(p.name,p.photo)}<b>${esc(p.name)}</b><span class="pill ${p.role===OCC?'warn':p.role===ADMIN?'esp':''}">${esc(p.role)}</span>${p.active?'':'<span class="pill">Desactivado</span>'}${me?'<span class="pill ok">Tú</span>':''}</div>
     <div class="fields2">
-      <label class="field"><span>PIN ${p.hasPin===false?'· sin PIN':'· oculto'}</span><input class="inp pin-inp" id="pin-${p.id}" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Nuevo" value="${esc(p.newPin||'')}"></label>
+      <label class="field"><span>PIN${p.hasPin===false?' · sin PIN':!p.pin?' · se verá cuando entre':''}</span><input class="inp pin-inp" id="pin-${p.id}" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Nuevo" value="${esc(p.newPin??p.pin??'')}"></label>
       <label class="field"><span>Rol</span><select class="inp" id="role-${p.id}" ${me?'disabled':''}>${ROLES.map(r=>`<option ${r===p.role?'selected':''}>${r}</option>`).join('')}</select></label>
     </div>
     ${p.role!==OCC?`<div class="chips" role="group" aria-label="Disciplinas">${DISCS.map(d=>`<button type="button" class="chip sm" data-act="pDisc" data-id="${p.id}" data-v="${d}" aria-pressed="${p.disciplines.includes(d)}">${d}</button>`).join('')}</div>
@@ -1202,10 +1200,21 @@ function perfilesView(){
   if(!list) return '<p class="loading">Cargando perfiles…</p>';
   const groups=[['Administración',list.filter(p=>p.active&&p.role===ADMIN)],['Instructores',list.filter(p=>p.active&&p.role==='Instructor')],
     ['Perfiles compartidos',list.filter(p=>p.active&&p.role===OCC)],['Desactivados',list.filter(p=>!p.active)]];
-  return `<div class="card-h"><h1>Perfiles</h1><button class="btn primary" data-act="newProf">Nuevo perfil</button></div>
+  return `<div class="card-h"><h1>Perfiles</h1><div class="actions"><button class="btn" data-act="pinList">Lista de PINs</button><button class="btn primary" data-act="newProf">Nuevo perfil</button></div></div>
     <p class="muted">Cada perfil es un acceso a la app. Desactivar corta el acceso al momento y guarda el historial; borrar lo elimina de Airtable.</p>
     ${groups.filter(g=>g[1].length).map(([t,l])=>`<h2>${t}</h2><div class="split">${l.map(profCard).join('')}</div>`).join('')}
     <p class="small muted">Para cambiar el nombre de alguien, cámbialo en Airtable en Profesores y también en Ocupación, para que sus clases sigan apareciendo.</p>`;
+}
+function pinListSheet(){
+  if(!U.profiles) return sheet('Lista de PINs','<p class="loading">Cargando…</p>');
+  const L=U.profiles.filter(p=>p.active).sort((a,b)=>a.name.localeCompare(b.name));
+  const missing=L.filter(p=>!p.pin).length;
+  return sheet('Lista de PINs',`<div class="form">
+    <table class="pins"><thead><tr><th>Nombre</th><th>Rol</th><th>PIN</th></tr></thead><tbody>${L.map(p=>`<tr><td>${esc(p.name)}</td><td class="small">${esc(p.role)}</td><td><b class="pin-inp">${p.pin?esc(p.pin):'<span class="small muted">—</span>'}</b></td></tr>`).join('')}</tbody></table>
+    ${missing?`<p class="small muted">${missing} ${missing===1?'PIN aparecerá':'PINs aparecerán'} cuando esa persona vuelva a entrar en la app, o al ponerle un PIN nuevo en Perfiles.</p>`:''}
+    <button class="btn huge primary" data-act="pinCopy">Copiar la lista</button>
+    <p class="small muted">Guárdala en un gestor de contraseñas, no en notas ni en chats.</p>
+    <button class="btn block ghost" data-act="closeSheet">Cerrar</button></div>`,'Solo para Administración');
 }
 function newProfSheet(){
   const N=U.modal.form;
@@ -1237,10 +1246,25 @@ function readDP(id){
   const d=$(id+'-d'),m=$(id+'-m'),y=$(id+'-y');if(!d||!m||!y)return null;
   const Y=+y.value,M=+m.value,D=Math.min(+d.value,dpDays(Y,M));let v=Y+'-'+pad(M)+'-'+pad(D);if(v<today())v=today();return v;
 }
+/* one row per day, each with its own start and hours (like the website booking) */
+function slotEditor(p,S){
+  const total=S.reduce((a,x)=>a+x.hours,0);
+  return S.map((x,i)=>`<div class="slot"><div class="slot-h"><b>Día ${i+1}</b>${S.length>1?`<button type="button" class="btn sm ghost danger" data-act="slotDel" data-p="${p}" data-i="${i}">Quitar</button>`:''}</div>
+      ${datePick(`${p}-d${i}`,x.date)}
+      <div class="fields2"><label class="field"><span>Empieza a las</span><select class="inp" id="${p}-st${i}">${[...new Set([...STARTS,x.start])].sort().map(t=>`<option ${t===x.start?'selected':''}>${t}</option>`).join('')}</select></label>
+        <label class="field"><span>Horas</span><select class="inp" id="${p}-h${i}">${[...new Set([...DURS,x.hours])].sort((a,b)=>a-b).map(h=>`<option value="${h}" ${h===x.hours?'selected':''}>${hTxt(h)}</option>`).join('')}</select></label></div>
+      <p class="small muted">${esc(fmtDate(x.date,{weekday:'long',day:'numeric',month:'long'}))} · ${esc(x.start)}–${esc(hmAdd(x.start,Math.round(x.hours*60)))}</p></div>`).join('')
+    +(S.length<14?`<button type="button" class="btn block" data-act="slotAdd" data-p="${p}">+ Añadir otro día</button>`:'')
+    +`<p class="sumline">${S.length} ${S.length===1?'día':'días'} · ${hTxt(total)} en total</p>`;
+}
+function readSlots(p,S){S.forEach((x,i)=>{const d=readDP(`${p}-d${i}`),t=$(`${p}-st${i}`),h=$(`${p}-h${i}`);if(d)x.date=d;if(t)x.start=t.value;if(h)x.hours=+h.value})}
+const slotsOf=p=>p==='nc'?U.nc.slots:U.md.slots;
+const slotDup=S=>{const seen=new Set();for(const x of S){if(seen.has(x.date))return x.date;seen.add(x.date)}return ''};
 function openNC(pre={}){
   U.nc=Object.assign({name:'',phone:'',email:'',discipline:'',level:'',pax:1,language:'Español',meeting:'',date:today(),start:'10:00',hours:2,days:1,
     teacher:isAdmin()?'':U.me.name,status:'Confirmada',notes:'',price:'',paid:'',err:'',saving:false},pre);
   if(U.nc.date<today())U.nc.date=today();
+  U.nc.slots=pre.slots||[{date:U.nc.date,start:U.nc.start,hours:U.nc.hours}];
   U.modal={type:'newClass'};
   if(isAdmin()){needTeam();loadBusy(U.nc.date)}
   render();
@@ -1253,11 +1277,11 @@ function loadBusy(date){
 }
 function readNC(){
   const N=U.nc;if(!N)return;
-  [['name','nc-name'],['phone','nc-phone'],['email','nc-email'],['start','nc-start'],['notes','nc-notes'],['price','nc-price'],['paid','nc-paid']].forEach(([k,id])=>{const e=$(id);if(e)N[k]=e.value.trim()});
-  const dt=readDP('nc-date');if(dt)N.date=dt;
+  [['name','nc-name'],['phone','nc-phone'],['email','nc-email'],['notes','nc-notes'],['price','nc-price'],['paid','nc-paid']].forEach(([k,id])=>{const e=$(id);if(e)N[k]=e.value.trim()});
+  readSlots('nc',N.slots);N.date=N.slots[0].date;N.start=N.slots[0].start;N.hours=N.slots[0].hours;
 }
 function newClassSheet(){
-  const N=U.nc,adm=isAdmin(),team=adm?needTeam():null,end=hmAdd(N.start,Math.round(N.hours*60));
+  const N=U.nc,adm=isAdmin(),team=adm?needTeam():null;N.date=N.slots[0].date;N.start=N.slots[0].start;N.hours=N.slots[0].hours;const end=hmAdd(N.start,Math.round(N.hours*60));
   const chip=(act,v,on,label,extra='')=>`<button type="button" class="chip ${extra}" data-act="${act}" data-v="${esc(v)}" aria-pressed="${on}">${label??esc(v)}</button>`;
   const busyOf=name=>{const items=(U.ncBusy||{})[N.date];if(!items)return null;
     const c=items.find(c=>c.teacher===name&&(c.wholeDay||(toMin(c.start)<toMin(end)&&toMin(c.end)>toMin(N.start))));return c?(c.wholeDay?'día bloqueado':`${c.start}–${c.end}`):''};
@@ -1273,11 +1297,8 @@ function newClassSheet(){
       <div class="field"><span>Personas</span><div class="stepper"><button type="button" class="btn" data-act="ncPax" data-n="-1" aria-label="Menos">−</button><b>${N.pax}</b><button type="button" class="btn" data-act="ncPax" data-n="1" aria-label="Más">+</button></div></div>
       <div class="field"><span>Idioma</span><div class="chips">${LANGS.map(x=>chip('ncLang',x,N.language===x,null,'sm')).join('')}</div></div></div>
     <div class="step"><h3><b>3</b>Cuándo</h3>
-      <div class="field"><span>Día</span>${datePick('nc-date',N.date)}</div>
-      <label class="field"><span>Hora de inicio</span><select class="inp" id="nc-start">${STARTS.map(t=>`<option ${t===N.start?'selected':''}>${t}</option>`).join('')}</select></label>
-      <div class="field"><span>Duración</span><div class="chips">${DURS.map(h=>chip('ncDur',h,N.hours===h,hTxt(h),'sm')).join('')}</div></div>
-      <div class="field"><span>Días seguidos</span><div class="chips">${[1,2,3,4,5,6,7].map(n=>chip('ncDays',n,N.days===n,String(n),'sm')).join('')}</div></div>
-      <p class="sumline">${esc(fmtDate(N.date,{weekday:'long',day:'numeric',month:'long',year:'numeric'}))} · ${esc(N.start)}–${esc(end)}${N.days>1?` · ${N.days} días seguidos`:''}</p></div>
+      <p class="small muted">Cada día puede empezar a una hora distinta y durar distinto.</p>
+      ${slotEditor('nc',N.slots)}</div>
     ${adm?`<div class="step"><h3><b>4</b>Profesor</h3><div class="chips">${tl.map(p=>{const b=busyOf(p.name);
         return `<button type="button" class="chip tall ${b?'busy':''}" data-act="ncTeacher" data-v="${esc(p.name)}" aria-pressed="${N.teacher===p.name}">${esc(p.name)}${b?`<small>ocupado ${esc(b)}</small>`:p.role===OCC?'<small>compartido</small>':''}</button>`}).join('')||'<span class="small muted">Cargando…</span>'}</div>
       <p class="small muted">«Ocupado» se calcula para el primer día. Si hay un choque en otro día, te avisa al crear.</p></div>`:''}
@@ -1293,20 +1314,15 @@ function newClassSheet(){
 }
 function openMD(id){
   const c=findItem(id);
-  U.md={id,date:addDays(c.date>=today()?c.date:today(),1),start:c.start,hours:c.hours||1,days:1,err:''};
+  const first=addDays(c.date>=today()?c.date:today(),1);
+  U.md={id,slots:[{date:first,start:c.start,hours:c.hours||1}],err:''};
   U.modal={type:'moreDays'};render();
 }
 function moreDaysSheet(){
   const M=U.md,c=findItem(M.id),b=c.booking||{};
-  const durs=[...new Set([...DURS,M.hours])].sort((a,b)=>a-b), starts=[...new Set([...STARTS,M.start])].sort();
-  const chip=(act,v,on,label)=>`<button type="button" class="chip sm" data-act="${act}" data-v="${v}" aria-pressed="${on}">${label}</button>`;
   return sheet('Más días con esta reserva',`<div class="form">
     <p class="muted">${esc(b.client||'')} · se añaden a la reserva ${esc(b.ref||'')}, con ${esc(c.teacher)}.</p>
-    <div class="field"><span>Primer día nuevo</span>${datePick('md-date',M.date)}</div>
-    <label class="field"><span>Hora de inicio</span><select class="inp" id="md-start">${starts.map(t=>`<option ${t===M.start?'selected':''}>${t}</option>`).join('')}</select></label>
-    <div class="field"><span>Duración cada día</span><div class="chips">${durs.map(h=>chip('mdDur',h,M.hours===h,hTxt(h))).join('')}</div></div>
-    <div class="field"><span>Días seguidos</span><div class="chips">${[1,2,3,4,5].map(n=>chip('mdDays',n,M.days===n,String(n))).join('')}</div></div>
-    <p class="sumline">${esc(fmtDate(M.date,{weekday:'long',day:'numeric',month:'long',year:'numeric'}))} · ${esc(M.start)}–${esc(hmAdd(M.start,Math.round(M.hours*60)))}${M.days>1?` · ${M.days} días`:''}</p>
+    ${slotEditor('md',M.slots)}
     <p class="err">${esc(M.err||'')}</p>
     <button class="btn huge primary" data-act="mdSave" ${M.saving?'disabled':''}>${M.saving?'Añadiendo…':'Añadir a la reserva'}</button></div>`,
     'Laia verá el cambio en su panel para cobrarlo.');
@@ -1477,6 +1493,7 @@ function sentSheet(){
 function modalView(){
   if(!U.modal) return '';
   if(U.modal.type==='push') return pushSheet();
+  if(U.modal.type==='pinList') return pinListSheet();
   if(U.modal.type==='close') return closeSheet();
   if(U.modal.type==='sent') return sentSheet();
   if(U.modal.type==='newProf') return newProfSheet();
@@ -1521,7 +1538,7 @@ function startRec(){
 }
 
 /* ================= ACTIONS ================= */
-function readMD(){const M=U.md,d=readDP('md-date'),t=$('md-start');if(d)M.date=d;if(t)M.start=t.value}
+function readMD(){readSlots('md',U.md.slots)}
 function readProf(p){const pin=$('pin-'+p.id),role=$('role-'+p.id),em=$('email-'+p.id),ph=$('phone-'+p.id);if(pin)p.newPin=pin.value.trim();if(role&&!role.disabled)p.role=role.value;if(em)p.email=em.value.trim();if(ph)p.phone=ph.value.trim()}
 function readNew(){const N=U.modal.form,n=$('np-name'),p=$('np-pin'),e=$('np-email'),f=$('np-phone');if(n)N.name=n.value.trim();if(p)N.pin=p.value.trim();if(e)N.email=e.value.trim();if(f)N.phone=f.value.trim()}
 async function tryLogin(){
@@ -1589,8 +1606,9 @@ const ACT={
   refresh:()=>{invalidate();U.team=null;render()},
   pDisc:d=>{const p=U.profiles.find(x=>x.id===d.id);readProf(p);const i=p.disciplines.indexOf(d.v);i>=0?p.disciplines.splice(i,1):p.disciplines.push(d.v);render()},
   pSave:async d=>{const p=U.profiles.find(x=>x.id===d.id);readProf(p);
-    if(p.newPin&&!/^\d{4}$/.test(p.newPin)){toast('El PIN tiene que tener 4 cifras.');return}
-    try{await api('profiles/'+d.id,{method:'PATCH',body:{...(p.newPin?{pin:p.newPin}:{}),role:p.role,disciplines:p.disciplines,email:p.email||'',phone:p.phone||'',notify:p.notify||[]}});toast(`${p.name} guardado`);U.profiles=null;U.team=null;U.notify=null;invalidate();render()}catch(e){toast(e.message)}},
+    const np=p.newPin&&p.newPin!==p.pin?p.newPin:'';
+    if(np&&!/^\d{4}$/.test(np)){toast('El PIN tiene que tener 4 cifras.');return}
+    try{await api('profiles/'+d.id,{method:'PATCH',body:{...(np?{pin:np}:{}),role:p.role,disciplines:p.disciplines,email:p.email||'',phone:p.phone||'',notify:p.notify||[]}});toast(`${p.name} guardado`);U.profiles=null;U.team=null;U.notify=null;invalidate();render()}catch(e){toast(e.message)}},
   newClass:d=>openNC(d.d?{date:d.d}:{}),
   ncDisc:d=>{readNC();U.nc.discipline=U.nc.discipline===d.v?'':d.v;render()},
   ncLevel:d=>{readNC();U.nc.level=U.nc.level===d.v?'':d.v;render()},
@@ -1601,13 +1619,19 @@ const ACT={
   ncTeacher:d=>{readNC();U.nc.teacher=d.v;render()},
   ncMeet:d=>{readNC();U.nc.meeting=U.nc.meeting===d.v?'':d.v;render()},
   ncStatus:d=>{readNC();U.nc.status=d.v;render()},
+  pinList:()=>{U.profiles=null;U.modal={type:'pinList'};needProfiles();render()},
+  pinCopy:async()=>{const t=(U.profiles||[]).filter(p=>p.active).sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`${p.name}\t${p.pin||'(pendiente)'}`).join('\n');
+    try{await navigator.clipboard.writeText(t);toast('Lista copiada')}catch(e){toast('No se pudo copiar: selecciona la tabla y cópiala a mano.')}},
+  slotAdd:d=>{d.p==='nc'?readNC():readMD();const S=slotsOf(d.p),l=S[S.length-1];if(S.length<14)S.push({date:addDays(l.date,1),start:l.start,hours:l.hours});render()},
+  slotDel:d=>{d.p==='nc'?readNC():readMD();const S=slotsOf(d.p);if(S.length>1)S.splice(+d.i,1);if(d.p==='nc'&&isAdmin())loadBusy(U.nc.slots[0].date);render()},
   ncCreate:async()=>{readNC();const N=U.nc;
     if(N.name.length<2){N.err='Escribe el nombre del cliente.';return render()}
     if(!N.discipline){N.err='Elige la disciplina.';return render()}
     if(isAdmin()&&!N.teacher){N.err='Elige el profesor.';return render()}
+    {const dup=slotDup(N.slots);if(dup){N.err=`El ${fmtDate(dup,{day:'numeric',month:'long'})} está dos veces: pon un solo horario por día.`;return render()}}
     N.err='';N.saving=true;render();
     try{const r=await api('classes',{method:'POST',body:{name:N.name,phone:N.phone,email:N.email,discipline:N.discipline,level:N.level,pax:N.pax,language:N.language,meeting:N.meeting,
-        teacher:N.teacher,date:N.date,start:N.start,hours:N.hours,days:N.days,status:N.status,notes:N.notes,price:isAdmin()?N.price:'',paid:isAdmin()?N.paid:''}});
+        teacher:N.teacher,slots:N.slots.map(x=>({date:x.date,start:x.start,hours:x.hours})),status:N.status,notes:N.notes,price:isAdmin()?N.price:'',paid:isAdmin()?N.paid:''}});
       toast(`Clase creada · ${r.ref}`);U.modal=null;U.nc=null;U.ncBusy=null;invalidate();render()}
     catch(e){N.saving=false;N.err=e.message;render()}},
   extend:async d=>{const c=findItem(d.id);
@@ -1620,8 +1644,10 @@ const ACT={
       level:c.level||'',pax:b.pax||1,meeting:b.meeting||'',date:day,start:st,hours:1,days:1,teacher:isAdmin()?c.teacher:U.me.name})},
   mdDur:d=>{readMD();U.md.hours=+d.v;render()},
   mdDays:d=>{readMD();U.md.days=+d.v;render()},
-  mdSave:async()=>{readMD();const M=U.md;M.saving=true;M.err='';render();
-    try{const r=await api(`classes/${M.id}/days`,{method:'POST',body:{date:M.date,start:M.start,hours:M.hours,days:M.days}});
+  mdSave:async()=>{readMD();const M=U.md;
+    {const dup=slotDup(M.slots);if(dup){M.err=`El ${fmtDate(dup,{day:'numeric',month:'long'})} está dos veces: pon un solo horario por día.`;return render()}}
+    M.saving=true;M.err='';render();
+    try{const r=await api(`classes/${M.id}/days`,{method:'POST',body:{slots:M.slots.map(x=>({date:x.date,start:x.start,hours:x.hours}))}});
       toast(`Añadido: ${r.dates.length} ${r.dates.length>1?'días':'día'} a la reserva`);U.modal=null;U.md=null;invalidate();render()}
     catch(e){M.saving=false;M.err=e.message;render()}},
   handover:async(d,el)=>{if(d.c==='0'){el.dataset.c='1';el.textContent='Confirmar: lo he recibido';return}
@@ -1670,8 +1696,8 @@ Object.assign(ACT,{
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el||el.tagName==='A')return;const fn=ACT[el.dataset.act];if(fn){e.preventDefault();fn(el.dataset,el,e)}});
 document.addEventListener('input',e=>{if(e.target.id==='rp-note'&&U.rep&&!REC)U.rep.note=e.target.value;if(e.target.id==='rp-by'&&U.rep)U.rep.by=e.target.value;if(e.target.id==='rp-cash'&&U.rep)U.rep.cash=e.target.value});
 document.addEventListener('change',e=>{if(e.target.id==='month-who'){U.monthWho=e.target.value;render()}
-  if(/^nc-date-[dmy]$/.test(e.target.id)||e.target.id==='nc-start'){readNC();if(isAdmin())loadBusy(U.nc.date);render()}
-  if(/^md-date-[dmy]$/.test(e.target.id)||e.target.id==='md-start'){readMD();render()}});
+  if(/^nc-(d\d+-[dmy]|st\d+|h\d+)$/.test(e.target.id)){readNC();if(isAdmin())loadBusy(U.nc.slots[0].date);render()}
+  if(/^md-(d\d+-[dmy]|st\d+|h\d+)$/.test(e.target.id)){readMD();render()}});
 document.addEventListener('keydown',e=>{if(!U.me&&/^\d$/.test(e.key))ACT.key({k:e.key});else if(!U.me&&e.key==='Backspace')ACT.key({k:'del'})});
 
 /* restore a saved session (instructors stay signed in for 30 days) */

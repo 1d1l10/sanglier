@@ -8,7 +8,7 @@ import { waNumber, validEmail } from "./staff-digest.mjs";
 
 export const DISCIPLINES = ["Esquí privado", "Snowboard", "Niños", "Grupo", "Freeride"];
 export const LANGS = { "Español": "ES", "English": "EN", "Français": "FR", "Català": "CA" };
-export const MEETING = ["Baqueira 1500", "Tanau 1700", "Bonaigua", "Orri", "Por confirmar"];
+export const MEETING = ["Baqueira 1500", "Baqueira 1800", "Tanau 1700", "Bonaigua", "Orri", "Por confirmar"];
 export const ADMIN_STATUS = ["Confirmada", "Faltan datos", "Solo WhatsApp", "Pendiente de señal"];
 const DAY_FROM = "08:00", DAY_TO = "18:00";
 const MON = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
@@ -61,10 +61,11 @@ export async function appendNote(resId, who, text) {
 }
 
 /* ---------- checks ---------- */
-async function conflicts(teacher, dates, start, end, ignoreIds = []) {
-  const sorted = [...dates].sort();
-  const rows = await rowsFor([teacher], sorted[0], sorted[sorted.length - 1], { role: ADMIN });
-  for (const d of sorted) {
+/** slots: [{ date, start, end }] — each day can have its own times. Refused with the first clash found. */
+async function conflicts(teacher, slots, ignoreIds = []) {
+  const sorted = [...slots].sort((a, b) => a.date.localeCompare(b.date));
+  const rows = await rowsFor([teacher], sorted[0].date, sorted[sorted.length - 1].date, { role: ADMIN });
+  for (const { date: d, start, end } of sorted) {
     const c = rows.find(r => r.date === d && !ignoreIds.includes(r.id) && (r.wholeDay || (toMin(r.start) < toMin(end) && toMin(r.end) > toMin(start))));
     if (c) throw new Refused(409, c.wholeDay ? `${teacher} no está disponible el ${short(d)} (día entero bloqueado).`
       : `${teacher} ya tiene ${c.block ? "bloqueado" : "una clase"} el ${short(d)} de ${c.start} a ${c.end}.`);
@@ -79,6 +80,44 @@ function checkTimes(date, start, end, days = 1) {
   if (!Number.isInteger(days) || days < 1 || days > 14) throw new Refused(400, "Los días seguidos tienen que ser entre 1 y 14.");
 }
 const consecutive = (date, days) => Array.from({ length: days }, (_, i) => addDays(date, i));
+
+/**
+ * The days of a new booking (or of days added to one), each with its own start and hours, like the website:
+ *   body.slots = [{ date: "2026-12-27", start: "10:00", hours: 2 }, { date: "2026-12-28", start: "09:30", hours: 3 }, …]
+ * Older clients send { date, start, hours, days } (same times on consecutive days): still accepted.
+ * -> [{ date, start, end, hours }] sorted by date, one per day. Refused if anything is off.
+ */
+export function parseSlots(body, defaults = {}) {
+  let raw = Array.isArray(body.slots) ? body.slots : null;
+  if (!raw) {
+    const days = body.days === undefined ? 1 : Number(body.days);
+    if (!Number.isInteger(days) || days < 1 || days > 14) throw new Refused(400, "Los días seguidos tienen que ser entre 1 y 14.");
+    if (!isDate(body.date)) throw new Refused(400, "Elige la fecha.");
+    raw = consecutive(body.date, days).map(date => ({ date, start: body.start, hours: body.hours }));
+  }
+  if (!raw.length) throw new Refused(400, "Añade al menos un día.");
+  if (raw.length > 14) throw new Refused(400, "Como máximo 14 días por reserva.");
+  const slots = raw.map(x => {
+    const date = String(x?.date || ""), start = String(x?.start || defaults.start || "");
+    const hours = Number(x?.hours ?? defaults.hours);
+    if (!(hours >= 0.5 && hours <= 8) || (hours * 2) % 1 !== 0) throw new Refused(400, `${isDate(date) ? short(date) + ": l" : "L"}a duración tiene que ser de 30 minutos a 8 horas.`);
+    const end = isHM(start) ? hh(toMin(start) + hours * 60) : "";
+    checkTimes(date, start, end);
+    return { date, start, end, hours };
+  }).sort((a, b) => a.date.localeCompare(b.date));
+  for (let i = 1; i < slots.length; i++)
+    if (slots[i].date === slots[i - 1].date) throw new Refused(400, `El ${short(slots[i].date)} está dos veces: pon un solo horario por día.`);
+  return slots;
+}
+const slotText = slots => slots.map(x => `${short(x.date)} ${x.start}-${x.end}`).join(", ");
+async function addOcc(records) {          // Airtable takes at most 10 records per call
+  const ids = [];
+  for (let i = 0; i < records.length; i += 10) {
+    const r = await at(T.occ, { method: "POST", body: { typecast: true, records: records.slice(i, i + 10) } });
+    ids.push(...r.records.map(x => x.id));
+  }
+  return ids;
+}
 
 async function nextRef() {
   const recs = await listAll(T.res, { filterByFormula: "FIND('MAN-', {Reserva})=1", "fields[]": [F.rRef] });
@@ -117,15 +156,11 @@ export async function createClass(me, body, activeNames) {
     if (!Number.isFinite(price) || price < 0 || price > 20000) throw new Refused(400, "El precio tiene que estar entre 0 y 20.000 €.");
     if (!Number.isFinite(paid) || paid < 0 || paid > price) throw new Refused(400, "Lo pagado no puede ser más que el precio.");
   }
-  const hours = Number(body.hours), days = body.days === undefined ? 1 : Number(body.days);
-  if (!(hours >= 0.5 && hours <= 8) || (hours * 2) % 1 !== 0) throw new Refused(400, "La duración tiene que ser de 30 minutos a 8 horas.");
-  const start = String(body.start || ""), end = isHM(start) ? hh(toMin(start) + hours * 60) : "";
-  checkTimes(body.date, start, end, days);
-  const dates = consecutive(body.date, days);
-  await conflicts(teacher, dates, start, end);
+  const slots = parseSlots(body);
+  await conflicts(teacher, slots);
 
   const ref = await nextRef();
-  const d = describe(dates.map(date => ({ date, teacher, start, end })));
+  const d = describe(slots.map(x => ({ date: x.date, teacher, start: x.start, end: x.end })));
   const notes = [String(body.notes || "").trim().slice(0, 500),
     `[APP ${madridToday()} ${madridHM()}] ${me.name} · ${admin ? "creada" : "creada por el profe, falta confirmar y cobrar"} · ${ref}`].filter(Boolean).join("\n");
   const fields = {
@@ -137,14 +172,16 @@ export async function createClass(me, body, activeNames) {
   };
   const res = await at(T.res, { method: "POST", body: { typecast: true, records: [{ fields }] } });
   const resId = res.records[0].id;
+  let occIds = [];
   try {
-    await at(T.occ, { method: "POST", body: { typecast: true, records: dates.map(date => ({ fields: {
-      [F.oClient]: name, [F.oDate]: date, [F.oProf]: teacher, [F.oStart]: start, [F.oEnd]: end, [F.oRes]: [resId] } })) } });
-  } catch (e) {
+    occIds = await addOcc(slots.map(x => ({ fields: {
+      [F.oClient]: name, [F.oDate]: x.date, [F.oProf]: teacher, [F.oStart]: x.start, [F.oEnd]: x.end, [F.oRes]: [resId] } })));
+  } catch (e) {                            // all or nothing: no half-created booking
+    for (const id of occIds) { try { await at(`${T.occ}/${id}`, { method: "DELETE" }); } catch {} }
     try { await at(`${T.res}/${resId}`, { method: "DELETE" }); } catch {}
     throw e;
   }
-  return { ref, resId, teacher, dates, start, end };
+  return { ref, resId, teacher, dates: slots.map(x => x.date), start: slots[0].start, end: slots[0].end, slots };
 }
 
 /* ---------- 2. add time to a class (it ran over) ---------- */
@@ -161,7 +198,7 @@ export async function extendClass(me, occId, minutes) {
   if (c.date < addDays(madridToday(), -1)) throw new Refused(400, "Solo se puede alargar una clase de hoy o de ayer.");
   const newEnd = hh(toMin(c.end) + minutes);
   if (toMin(newEnd) > toMin(DAY_TO)) throw new Refused(400, `Con ese tiempo la clase pasaría de las ${DAY_TO}. Habla con Laia.`);
-  await conflicts(c.teacher, [c.date], c.start, newEnd, [occId]);
+  await conflicts(c.teacher, [{ date: c.date, start: c.start, end: newEnd }], [occId]);
   await at(T.occ, { method: "PATCH", body: { records: [{ id: occId, fields: { [F.oEnd]: newEnd } }] } });
   await refreshBooking(c.resId);
   const ref = (await at(`${T.res}/${c.resId}`, { params: { returnFieldsByFieldId: "true" } })).fields[F.rRef] || "";
@@ -172,19 +209,14 @@ export async function extendClass(me, occId, minutes) {
 /* ---------- 3. more days on the same booking ---------- */
 export async function addDays_(me, occId, body) {
   const c = await loadClass(me, occId);
-  const days = body.days === undefined ? 1 : Number(body.days);
-  const start = body.start || c.start, hours = body.hours === undefined ? (toMin(c.end) - toMin(c.start)) / 60 : Number(body.hours);
-  if (!(hours >= 0.5 && hours <= 8) || (hours * 2) % 1 !== 0) throw new Refused(400, "La duración tiene que ser de 30 minutos a 8 horas.");
-  const end = isHM(start) ? hh(toMin(start) + hours * 60) : "";
-  checkTimes(body.date, start, end, days);
-  const dates = consecutive(body.date, days);
-  await conflicts(c.teacher, dates, start, end);
-  await at(T.occ, { method: "POST", body: { typecast: true, records: dates.map(date => ({ fields: {
-    [F.oClient]: c.client, [F.oDate]: date, [F.oProf]: c.teacher, [F.oStart]: start, [F.oEnd]: end, [F.oRes]: [c.resId] } })) } });
+  const slots = parseSlots(body, { start: c.start, hours: (toMin(c.end) - toMin(c.start)) / 60 });
+  await conflicts(c.teacher, slots);
+  await addOcc(slots.map(x => ({ fields: {
+    [F.oClient]: c.client, [F.oDate]: x.date, [F.oProf]: c.teacher, [F.oStart]: x.start, [F.oEnd]: x.end, [F.oRes]: [c.resId] } })));
   await refreshBooking(c.resId);
   const ref = (await at(`${T.res}/${c.resId}`, { params: { returnFieldsByFieldId: "true" } })).fields[F.rRef] || "";
-  await appendNote(c.resId, me.name, `+${days} ${days === 1 ? "día" : "días"} (${dates.map(short).join(", ")} ${start}-${end}) · ${c.client} · ${ref}`);
-  return { dates, start, end };
+  await appendNote(c.resId, me.name, `+${slots.length} ${slots.length === 1 ? "día" : "días"} (${slotText(slots)}) · ${c.client} · ${ref}`);
+  return { dates: slots.map(x => x.date), start: slots[0].start, end: slots[0].end, slots };
 }
 
 /* ---------- panel: what the team changed from the app in the last days ---------- */

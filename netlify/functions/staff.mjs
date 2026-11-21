@@ -10,7 +10,7 @@ export const config = { path: ["/api/staff", "/api/staff/*"] };
 import { T, F, TO_CONFIRM, PAID, LOST, LEVELS, ADMIN, OCC, q, toMin, isHM, isDate, addDays, madridToday, madridHM, monthEnd, sel, firstName,
   env, at, listAll, rowsFor, getRow } from "../lib/staff-core.mjs";
 import { setupState, plan, deliver, recentLog, recipients, logWrite, sendEmail, clientIO, alertAdmins } from "../lib/staff-notify.mjs";
-import { hashPin, isHashed, normPin, pinVersion, samePin, loginGate, loginFailed, loginOk } from "../lib/staff-auth.mjs";
+import { hashPin, isHashed, normPin, pinVersion, samePin, sealPin, openPin, loginGate, loginFailed, loginOk } from "../lib/staff-auth.mjs";
 import { pushReady, cleanSubscription, addSub, removeSub, readSubs, pushTo } from "../lib/staff-push.mjs";
 import { upcoming, sampleMessages, confirmAttendance, langOf, loadPoints } from "../lib/staff-remind.mjs";
 import { waNumber, validEmail } from "../lib/staff-digest.mjs";
@@ -69,8 +69,9 @@ export default async (req, context) => {
       if (recs.length !== 1) return wrong();
       await loginOk(ip);
       const f = recs[0].fields, role = f[F.pRole]?.name || f[F.pRole] || "Instructor";
-      if (!isHashed(f[F.pPin])) {                 // legacy plain PIN: store it hashed from now on
-        try { await at(T.prof, { method: "PATCH", body: { records: [{ id: recs[0].id, fields: { [F.pPin]: h } }] } }); } catch (e) { console.error("pin-upgrade", e.message); }
+      if (!isHashed(f[F.pPin]) || openPin(f[F.pPinSeal]) !== pin) {   // legacy plain PIN, or no readable copy for the admin yet
+        try { await at(T.prof, { method: "PATCH", body: { records: [{ id: recs[0].id, fields: { [F.pPin]: h, [F.pPinSeal]: sealPin(pin) } }] } }); }
+        catch (e) { console.error("pin-upgrade", e.message); }
       }
       const days = role === ADMIN ? 1 : 30;    // instructors stay signed in (gloves); office 1 day
       const me = { id: recs[0].id, name: f[F.pName], role };
@@ -197,16 +198,21 @@ export default async (req, context) => {
     if (route === "profiles") {
       if (!isAdmin) return err(403, "Solo para administración.");
       const all = async () => (await listAll(T.prof, { "sort[0][field]": "Nombre" }, { byName: true })).map(r => ({
-        id: r.id, name: r.fields["Nombre"] || "", pinStored: r.fields["PIN"] || "", role: sel(r.fields["Rol"]),
+        id: r.id, name: r.fields["Nombre"] || "", pinStored: r.fields["PIN"] || "", pinSeal: r.fields["PIN cifrado"] || "", role: sel(r.fields["Rol"]),
         active: !!r.fields["Activo"], disciplines: r.fields["Disciplinas"] || [], phone: r.fields["Teléfono"] || "",
         email: r.fields["Email"] || "", notify: r.fields["Avisos"] || [],
         photo: r.fields["Foto"]?.[0]?.thumbnails?.large?.url || "" }));
-      const pub = ({ pinStored, ...x }) => ({ ...x, pin: "", hasPin: !!pinStored });   // PINs never leave the server
+      // Administración sees each PIN (decrypted here); the hash itself never leaves the server.
+      // A PIN shows as unknown until that person logs in once, or an admin sets a new one.
+      const pub = ({ pinStored, pinSeal, ...x }) => {
+        const pin = !isHashed(pinStored) ? String(pinStored || "") : openPin(pinSeal);
+        return { ...x, pin: pin && samePin(pinStored, pin) ? pin : "", hasPin: !!pinStored };
+      };
       if (req.method === "GET") {
         const list = await all();
         const plain = list.filter(x => x.pinStored && !isHashed(x.pinStored));   // convert any plain PIN left in Airtable
         for (let i = 0; i < plain.length; i += 10) {
-          try { await at(T.prof, { method: "PATCH", body: { records: plain.slice(i, i + 10).map(x => ({ id: x.id, fields: { [F.pPin]: normPin(x.pinStored) } })) } }); }
+          try { await at(T.prof, { method: "PATCH", body: { records: plain.slice(i, i + 10).map(x => ({ id: x.id, fields: { [F.pPin]: normPin(x.pinStored), [F.pPinSeal]: sealPin(String(x.pinStored).trim()) } })) } }); }
           catch (e) { console.error("pin-migrate", e.message); }
         }
         return json({ profiles: list.map(pub) });
@@ -229,7 +235,7 @@ export default async (req, context) => {
       };
       const fieldsOf = p => {
         const o = {};
-        if (p.pin !== undefined) o[F.pPin] = hashPin(p.pin);
+        if (p.pin !== undefined) { o[F.pPin] = hashPin(p.pin); o[F.pPinSeal] = sealPin(p.pin); }
         if (p.role !== undefined) o[F.pRole] = p.role;
         if (p.active !== undefined) o[F.pActive] = !!p.active;
         if (p.disciplines !== undefined) o[F.pDisc] = p.disciplines;
