@@ -2,7 +2,7 @@
 // Pure functions, no imports: the server uses them to send, and the app inlines the very same
 // code for the "Avisos" preview, so what Laia sees is exactly what the teacher receives.
 
-export const APP_URL = "https://ethsanglierskischool.com/staff";
+export const APP_URL = "https://sanglier.netlify.app/staff";
 
 export function dayLabel(date) {
   const s = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })

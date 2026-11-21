@@ -83,7 +83,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .bnav button[aria-current="page"]{color:var(--on-navy);border-top-color:var(--accent);background:var(--navy-2)}
 
 /* surfaces */
-.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;display:grid;gap:14px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;display:grid;gap:14px;min-width:0;align-content:start}
 .card-h{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .grid2{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .kpis{display:grid;gap:10px;grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -343,7 +343,7 @@ for(const k in A){try{const [h,b]=A[k].split(',');const bin=atob(b),u=new Uint8A
 /* ================= MESSAGES (same code the server uses to send) ================= */
 const MSG=(()=>{
 
-const APP_URL = "https://ethsanglierskischool.com/staff";
+const APP_URL = "https://sanglier.netlify.app/staff";
 
 function dayLabel(date) {
   const s = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })
@@ -589,7 +589,7 @@ ${m.ask ? `<tr><td style="padding:14px 18px 0;font-size:16px;font-weight:bold;li
 
 return {buildMessage,KINDS,LANGS,langOf};
 })();
-const WA_TEMPLATE=(name,day,list)=>`Hola ${name}, estas son tus clases de ${day}: ${list}. Detalle en la app: https://ethsanglierskischool.com/staff`;
+const WA_TEMPLATE=(name,day,list)=>`Hola ${name}, estas son tus clases de ${day}: ${list}. Detalle en la app: https://sanglier.netlify.app/staff`;
 
 /* ================= CONFIG ================= */
 const PROD_HOSTS=['ethsanglierskischool.com','www.ethsanglierskischool.com'];
@@ -1384,7 +1384,7 @@ function clientsView(){
     <label class="field"><span>Mándate una prueba a este email</span><input class="inp" id="cl-to" type="email" inputmode="email" autocomplete="off" value="${esc(U.cto||'')}" placeholder="tu@correo.com"></label>
     <div class="actions"><button class="btn primary" data-act="clTest" data-c="0">Enviar prueba</button></div></section>`;
   const logRows=log===null?'<p class="loading">Cargando…</p>':log.filter(x=>/^c/.test(x.kind)).slice(0,12).map(x=>`<div class="logrow"><span><b>${esc(x.who)}</b> · ${esc(x.channel)} · ${esc(LOG_KIND[x.kind]||x.kind)}${x.detail&&x.status!=='Enviado'?`<br><small>${esc(x.detail)}</small>`:''}</span><span class="pill ${stCls(x.status)}">${esc(x.status)}</span><small>${esc(new Date(x.at).toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}</small></div>`).join('')||'<p class="empty">Todavía no se ha enviado ningún recordatorio a clientes.</p>';
-  return `<p class="muted">A cada cliente con la reserva pagada: una semana antes (ya lo estamos preparando; Laia les ayuda con el material), dos días antes (todo listo, te esperamos) y dos horas antes (profesor, punto de encuentro, mapa y teléfono de Laia). En su idioma.</p>
+  return `<p class="muted">A cada cliente con la reserva pagada: una semana antes (te esperamos, y un botón para pedirle a Laia lo que necesite) y la noche antes (cómo llegar: mapa, indicaciones del punto de encuentro y teléfono de Laia). En su idioma.</p>
     ${status}${ready}
     <p><b>${paid.length}</b> reservas pagadas con clase en los próximos días. Las que tienen algún problema salen arriba.</p>
     <h2>Próximas reservas</h2>
