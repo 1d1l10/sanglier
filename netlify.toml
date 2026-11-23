@@ -17,3 +17,25 @@
   [headers.values]
     Cache-Control = "no-cache"
     Service-Worker-Allowed = "/staff/"
+
+# internal files live in the repo but must never be served on the site
+[[redirects]]
+  from = "/docs/*"
+  to = "/404"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/tests/*"
+  to = "/404"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/scripts/*"
+  to = "/404"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/LEEME.txt"
+  to = "/404"
+  status = 404
+  force = true
